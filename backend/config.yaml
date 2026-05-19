@@ -1,0 +1,9 @@
+server:
+  port: 8087
+  jwt_secret: "your-super-secret-jwt-key-change-me"
+database:
+  driver: sqlite3
+  dsn: "./data.db"
+storage:
+  upload_dir: "./uploads"
+  max_size_mb: 100

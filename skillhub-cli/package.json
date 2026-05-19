@@ -1,0 +1,17 @@
+{
+  "name": "@hermes/skillhub-cli",
+  "version": "1.0.0",
+  "description": "Hermes Agent Skill Hub CLI - 安装、搜索、管理 Agent 技能包",
+  "bin": {
+    "skillhub": "./bin/skillhub.js"
+  },
+  "scripts": {
+    "start": "node bin/skillhub.js"
+  },
+  "dependencies": {
+    "commander": "^11.0.0",
+    "chalk": "^4.1.2",
+    "fs-extra": "^11.0.0",
+    "glob": "^10.0.0"
+  }
+}

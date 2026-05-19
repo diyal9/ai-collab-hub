@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+vendor/
+
+# Build Outputs
+dist/
+build/
+
+# Binaries
+*.exe
+*.dll
+*.so
+*.dylib
+ai-collab-hub
+backend/ai-collab-server
+backend/hub
+
+# Database & Uploads
+*.db
+uploads/
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# Old project files
+.old-project/
+
+# Logs
+*.log

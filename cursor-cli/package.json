@@ -1,0 +1,13 @@
+{
+  "name": "@hermes/cursor-cli",
+  "version": "1.0.0",
+  "description": "Cursor AI \u7f16\u8f91\u5668 Headless CLI \u5305\u88c5\u5668",
+  "main": "index.js",
+  "bin": {
+    "cursor-cli": "./index.js"
+  },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {}
+}
