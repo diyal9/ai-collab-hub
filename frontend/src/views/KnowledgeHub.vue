@@ -1,7 +1,7 @@
 <template>
   <div>
     <div class="flex justify-between items-center mb-6">
-      <h1 class="text-2xl font-bold">🧠 知识中枢</h1>
+      <h1 class="text-2xl font-bold flex items-center gap-2"><svg class="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path></svg> 知识中枢</h1>
       <button @click="showAdd = true" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">
         + 录入知识
       </button>
@@ -87,7 +87,7 @@
 
     <!-- 空状态 -->
     <div v-if="entries.length === 0" class="text-center py-16 text-gray-400">
-      <div class="text-5xl mb-4">🧠</div>
+      <svg class="w-20 h-20 mx-auto mb-4 text-gray-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path></svg>
       <p>暂无知识条目</p>
     </div>
 

@@ -6,10 +6,10 @@ const routes = [
     { path: 'tasks', name: 'tasks', component: () => import('../views/Tasks.vue') },
     { path: 'files', name: 'files', component: () => import('../views/Files.vue') },
     { path: 'terminals', name: 'terminals', component: () => import('../views/AgentTerminals.vue') },
-    { path: 'skills', name: 'skills', component: () => import('../views/SkillsManager.vue') },
     { path: 'orchestrator', name: 'orchestrator', component: () => import('../views/AgentOrchestrator.vue') },
     { path: 'node-templates', name: 'node-templates', component: () => import('../views/NodeTemplateManager.vue') },
     { path: 'knowledge', name: 'knowledge', component: () => import('../views/KnowledgeHub.vue') },
+    { path: 'memory', name: 'memory', component: () => import('../views/MemorySystem.vue') },
     { path: 'agents', name: 'agents', component: () => import('../views/AgentManager.vue') },
     { path: 'admin', name: 'admin', component: () => import('../views/Admin.vue'), meta: { requiresAdmin: true } }
   ]}

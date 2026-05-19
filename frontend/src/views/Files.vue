@@ -1,6 +1,6 @@
 <template>
   <div>
-    <h1 class="text-2xl font-bold mb-6">📂 文件管理</h1>
+    <h1 class="text-2xl font-bold flex items-center gap-2"><svg class="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg> 文件管理</h1>
 
     <!-- 上传 -->
     <div v-if="activeTab !== 'shared'" class="mb-6">
@@ -167,7 +167,7 @@
     </div>
 
     <div v-if="isEmpty" class="text-center py-16 text-gray-400">
-      <div class="text-5xl mb-4">📂</div>
+      <svg class="w-20 h-20 mx-auto mb-4 text-gray-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
       <p>暂无文件</p>
     </div>
   </div>

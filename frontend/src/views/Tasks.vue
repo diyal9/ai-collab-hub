@@ -1,7 +1,7 @@
 <template>
   <div class="space-y-4">
     <div class="flex justify-between items-center">
-      <h1 class="text-2xl font-bold">🚀 任务管理</h1>
+      <h1 class="text-2xl font-bold flex items-center gap-2"><svg class="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg> 任务编排</h1>
       <button @click="openCreateDialog" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 transition">
         + 新建任务
       </button>
@@ -13,7 +13,7 @@
         <template #default="{ row }">
           <div class="font-medium">{{ row.title }}</div>
           <div v-if="row.source === 'flow'" class="text-xs text-blue-500 mt-1">
-            🧩 引用流程 #{{ row.flow_id }}
+            <svg class="w-3.5 h-3.5 inline" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"></circle><circle cx="6" cy="12" r="3"></circle><circle cx="18" cy="19" r="3"></circle><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line></svg> 引用流程 #{{ row.flow_id }}
           </div>
         </template>
       </el-table-column>
@@ -56,7 +56,7 @@
           </div>
           <div @click="newTask.source = 'flow'" 
                :class="['flex-1 p-4 border-2 rounded-lg cursor-pointer transition', newTask.source === 'flow' ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:border-gray-300']">
-            <div class="font-medium">🧩 引用编排流程</div>
+            <div class="font-medium flex items-center gap-2"><svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"></circle><circle cx="6" cy="12" r="3"></circle><circle cx="18" cy="19" r="3"></circle><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line></svg> 引用编排流程</div>
             <div class="text-xs text-gray-500 mt-1">复用已有的可视化流水线，一键执行复杂管线</div>
           </div>
         </div>
@@ -101,16 +101,16 @@
     </el-dialog>
 
     <!-- 任务详情弹窗 -->
-    <el-dialog v-model="showSteps" :title="currentTaskDetail.source === 'flow' ? `任务详情 (流程执行)` : '任务执行详情'" width="70%">
+    <el-dialog v-model="showSteps" :title="currentTaskDetail?.source === 'flow' ? `任务详情 (流程执行)` : '任务执行详情'" width="70%">
       <div class="mb-4">
         <el-descriptions :column="3" border v-if="currentTaskDetail">
           <el-descriptions-item label="任务 ID">{{ currentTaskDetail.id }}</el-descriptions-item>
           <el-descriptions-item label="状态">
-            <el-tag :type="statusTag(currentTaskDetail.status)" size="small">{{ currentTaskDetail.status }}</el-tag>
+            <el-tag :type="statusTag(currentTaskDetail?.status)" size="small">{{ currentTaskDetail?.status }}</el-tag>
           </el-descriptions-item>
           <el-descriptions-item label="来源">
-            <el-tag :type="currentTaskDetail.source === 'flow' ? 'warning' : 'success'" size="small">
-              {{ currentTaskDetail.source === 'flow' ? '编排' : '自定义' }}
+            <el-tag :type="currentTaskDetail?.source === 'flow' ? 'warning' : 'success'" size="small">
+              {{ currentTaskDetail?.source === 'flow' ? '编排' : '自定义' }}
             </el-tag>
           </el-descriptions-item>
         </el-descriptions>
@@ -122,7 +122,7 @@
           <div v-for="step in flowSteps" :key="step.id"
             class="flex items-center gap-3 p-3 rounded border bg-white transition hover:shadow-sm"
             :class="stepStatusColor(step.status)">
-            <span class="text-2xl">{{ stepTypeIcon(step.node_type) }}</span>
+            <span class="text-2xl" v-html="stepTypeIcon(step.node_type)"></span>
             <div class="flex-1 min-w-0">
               <div class="font-medium text-sm truncate">{{ step.node_name }} <span class="text-xs text-gray-400 ml-1">({{ step.node_type }})</span></div>
               <div v-if="step.output" class="text-xs text-gray-600 mt-1 font-mono bg-gray-50 p-2 rounded max-h-24 overflow-y-auto whitespace-pre-wrap border border-gray-100">{{ step.output }}</div>
@@ -327,7 +327,15 @@ const reply = async (sid, tid, txt) => {
 
 // UI Helpers for Flow Steps
 const stepTypeIcon = (t) => {
-  return { agent: '🤖', condition: '🔀', merge: '🔗', trigger: '⚡', webhook: '🔌', code: '💻' }[t] || '📦'
+  const icons = {
+    agent: '<svg class="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="10" rx="2"></rect><circle cx="12" cy="5" r="2"></circle><path d="M12 7v4"></path></svg>',
+    condition: '<svg class="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>',
+    merge: '<svg class="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"></circle><circle cx="6" cy="12" r="3"></circle><circle cx="18" cy="19" r="3"></circle><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line></svg>',
+    trigger: '<svg class="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>',
+    webhook: '<svg class="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>',
+    code: '<svg class="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>'
+  }
+  return icons[t] || '<svg class="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>'
 }
 const stepStatusBadge = (s) => {
   return { running: 'bg-blue-100 text-blue-700', completed: 'bg-green-100 text-green-700', failed: 'bg-red-100 text-red-700', skipped: 'bg-gray-200 text-gray-600' }[s] || 'bg-gray-100'

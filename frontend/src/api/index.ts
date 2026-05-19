@@ -40,15 +40,6 @@ export const updateTerminal = (id: string, data: any) => api.put(`/terminals/${i
 export const deleteTerminal = (id: string) => api.delete(`/terminals/${id}`)
 export const connectTerminal = (id: string) => api.post(`/terminals/${id}/connect`)
 
-// Skills
-export const getSkills = () => api.get('/skills')
-export const createSkill = (data: any) => api.post('/skills', data)
-export const updateSkill = (id: string, data: any) => api.put(`/skills/${id}`, data)
-export const deleteSkill = (id: string) => api.delete(`/skills/${id}`)
-export const uploadSkill = (fd: FormData) => api.post('/skills/upload', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
-export const toggleSkill = (id: string) => api.post(`/skills/${id}/toggle`)
-export const getSkillManifest = (id: string) => api.get(`/skills/${id}/manifest`)
-
 // Agent Flows (Orchestration)
 export const getFlows = () => api.get('/flows')
 export const createFlow = (data: any) => api.post('/flows', data)

@@ -61,7 +61,7 @@
         </button>
         <button @click="autoDispatch"
           class="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 text-sm">
-          ⚡ 自动匹配分发
+          <svg class="w-4 h-4 inline" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg> 自动匹配分发
         </button>
       </div>
 

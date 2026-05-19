@@ -111,25 +111,11 @@ func scanDirectory(root string, prefix string) ([]FileInfo, error) {
 	return files, err
 }
 
-// ─── Skills 提取 ───
-
-func extractSkillManifest(dir string) (string, error) {
-	// 尝试读取 SKILL.md 或 skill.yaml
-	for _, name := range []string{"SKILL.md", "skill.yaml", "skill.yml", "manifest.json"} {
-		path := filepath.Join(dir, name)
-		if data, err := os.ReadFile(path); err == nil {
-			return string(data), nil
-		}
-	}
-	return "", nil
-}
-
 // ─── 主函数 ───
 
 func main() {
 	config.Load("config.yaml")
 	os.MkdirAll(config.Cfg.Storage.UploadDir, 0755)
-	os.MkdirAll(filepath.Join(config.Cfg.Storage.UploadDir, "skills"), 0755)
 	os.MkdirAll(filepath.Join(config.Cfg.Storage.UploadDir, "knowledge"), 0755)
 	db.Init()
 
@@ -496,100 +482,7 @@ func main() {
 		})
 
 		// ═══════════════════════════════════════════
-		// 2. Skills 技能管理
-		// ═══════════════════════════════════════════
-		authGroup.GET("/skills", func(c *gin.Context) {
-			var skills []model.Skill
-			db.DB.Order("updated_at desc").Find(&skills)
-			c.JSON(200, skills)
-		})
-
-		authGroup.POST("/skills", func(c *gin.Context) {
-			var s model.Skill
-			c.BindJSON(&s)
-			db.DB.Create(&s)
-			c.JSON(200, s)
-		})
-
-		authGroup.PUT("/skills/:id", func(c *gin.Context) {
-			var s model.Skill
-			if db.DB.First(&s, c.Param("id")).Error != nil {
-				c.JSON(404, gin.H{"error": "not found"})
-				return
-			}
-			c.BindJSON(&s)
-			s.ID, _ = parseUint(c.Param("id"))
-			db.DB.Save(&s)
-			c.JSON(200, s)
-		})
-
-		authGroup.DELETE("/skills/:id", func(c *gin.Context) {
-			var s model.Skill
-			if db.DB.First(&s, c.Param("id")).Error != nil {
-				c.JSON(404, gin.H{"error": "not found"})
-				return
-			}
-			// 删除文件
-			if s.Path != "" {
-				os.RemoveAll(s.Path)
-			}
-			db.DB.Delete(&s)
-			c.JSON(200, gin.H{"ok": true})
-		})
-
-		authGroup.POST("/skills/upload", func(c *gin.Context) {
-			f, _ := c.FormFile("file")
-			skillName := strings.TrimSuffix(f.Filename, filepath.Ext(f.Filename))
-			skillDir := filepath.Join(config.Cfg.Storage.UploadDir, "skills", skillName)
-			os.MkdirAll(skillDir, 0755)
-
-			dstPath := filepath.Join(skillDir, f.Filename)
-			c.SaveUploadedFile(f, dstPath)
-
-			// 如果是 zip，解压
-			if strings.HasSuffix(strings.ToLower(f.Filename), ".zip") {
-				// 简单解压逻辑
-				os.Rename(dstPath, filepath.Join(skillDir, "_archive.zip"))
-				// 实际应使用 archive/zip 解压，这里标记为已上传
-			}
-
-			manifest, _ := extractSkillManifest(skillDir)
-
-			skill := model.Skill{
-				Name:        skillName,
-				Version:     "1.0.0",
-				Description: skillName,
-				Author:      "user",
-				Path:        skillDir,
-				Manifest:    manifest,
-				Enabled:     true,
-			}
-			db.DB.Create(&skill)
-			c.JSON(200, skill)
-		})
-
-		authGroup.POST("/skills/:id/toggle", func(c *gin.Context) {
-			var s model.Skill
-			if db.DB.First(&s, c.Param("id")).Error != nil {
-				c.JSON(404, gin.H{"error": "not found"})
-				return
-			}
-			s.Enabled = !s.Enabled
-			db.DB.Save(&s)
-			c.JSON(200, gin.H{"ok": true, "enabled": s.Enabled})
-		})
-
-		authGroup.GET("/skills/:id/manifest", func(c *gin.Context) {
-			var s model.Skill
-			if db.DB.First(&s, c.Param("id")).Error != nil {
-				c.JSON(404, gin.H{"error": "not found"})
-				return
-			}
-			c.JSON(200, gin.H{"manifest": s.Manifest, "path": s.Path})
-		})
-
-		// ═══════════════════════════════════════════
-		// 3. Agent 编排 (Flow)
+		// 2. Agent 编排 (Flow)
 		// ═══════════════════════════════════════════
 		authGroup.GET("/flows", func(c *gin.Context) {
 			var flows []model.AgentFlow

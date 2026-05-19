@@ -72,25 +72,6 @@ type AgentTerminal struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
-// ─── 新增: Skills 技能管理 ───
-
-// Skill: 技能包定义
-type Skill struct {
-	ID          uint      `json:"id" gorm:"primaryKey"`
-	Name        string    `json:"name" gorm:"uniqueIndex"`
-	Version     string    `json:"version"`
-	Description string    `json:"description"`
-	Author      string    `json:"author"`
-	Category    string    `json:"category"`        // devops, research, creative, etc.
-	Trigger     string    `json:"trigger"`         // 触发条件关键词
-	Icon        string    `json:"icon"`            // emoji 或 icon 路径
-	Path        string    `json:"path"`            // 存储路径
-	Manifest    string    `json:"manifest"`        // skill.yaml / SKILL.md 内容
-	Enabled     bool      `json:"enabled" gorm:"default:true"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
-}
-
 // ─── 新增: Agent 编排 ───
 
 // AgentFlow: 可视化编排的流程定义
@@ -176,7 +157,7 @@ type AuditLog struct {
 func AutoMigrateList() []interface{} {
 	return []interface{}{
 		&User{}, &Agent{}, &Task{}, &TaskStep{}, &File{},
-		&AgentTerminal{}, &Skill{}, &AgentFlow{}, &AgentNode{}, &AgentEdge{},
+		&AgentTerminal{}, &AgentFlow{}, &AgentNode{}, &AgentEdge{},
 		&KnowledgeEntry{}, &MemorySession{}, &AuditLog{},
 	}
 }

@@ -1,7 +1,7 @@
 <template>
   <div>
     <div class="flex justify-between items-center mb-6">
-      <h1 class="text-2xl font-bold">Agent 可视化编排</h1>
+      <h1 class="text-2xl font-bold flex items-center gap-2"><svg class="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"></circle><circle cx="6" cy="12" r="3"></circle><circle cx="18" cy="19" r="3"></circle><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line></svg> Agent 编排</h1>
       <button @click="newFlow" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">
         + 新建流程
       </button>
@@ -31,62 +31,44 @@
           <span :class="flowStatusClass(currentFlow.status)" class="px-2 py-1 rounded text-xs">{{ currentFlow.status }}</span>
         </div>
         <div class="flex gap-2">
-          <button @click="$router.push('/node-templates')" class="bg-gray-100 text-gray-700 px-3 py-1 rounded text-sm hover:bg-gray-200">
-            🔧 节点工厂
+          <button @click="$router.push('/node-templates')" class="bg-gray-100 text-gray-700 px-3 py-1 rounded text-sm hover:bg-gray-200 flex items-center gap-1.5">
+            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path></svg>
+            节点工厂
           </button>
-          <button @click="validateFlow" class="bg-gray-100 text-gray-700 px-3 py-1 rounded text-sm hover:bg-gray-200">
-            ✅ 验证
+          <button @click="validateFlow" class="bg-gray-100 text-gray-700 px-3 py-1 rounded text-sm hover:bg-gray-200 flex items-center gap-1.5">
+            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
+            验证
           </button>
           <el-popconfirm title="确定执行此流程？" @confirm="executeCurrentFlow" width="200">
             <template #reference>
-              <button @click.stop :disabled="executing" class="bg-green-600 text-white px-3 py-1 rounded text-sm hover:bg-green-700 disabled:opacity-50">
-                {{ executing ? '⏳ 执行中...' : '▶ 执行流程' }}
+              <button @click.stop :disabled="executing" class="bg-green-600 text-white px-3 py-1 rounded text-sm hover:bg-green-700 disabled:opacity-50 flex items-center gap-1.5">
+                <svg v-if="!executing" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                <svg v-else class="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"></path></svg>
+                {{ executing ? '执行中...' : '执行流程' }}
               </button>
-            
-      <!-- 右键菜单 -->
-      <div v-if="contextMenu.show" 
-           class="fixed bg-white rounded-lg shadow-xl border border-gray-200 z-50 py-1 min-w-[180px]"
-           :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
-           @click.stop>
-        <button @click="arrangeNodes(); hideContextMenu()" class="w-full text-left px-4 py-2.5 text-sm hover:bg-blue-50 text-gray-700 flex items-center gap-2 transition-colors">
-          ✨ 整理节点 (自动排版)
-        </button>
-        <div class="border-t border-gray-100 my-1"></div>
-        <button @click="deleteSelectedNodes(); hideContextMenu()" class="w-full text-left px-4 py-2.5 text-sm hover:bg-red-50 text-red-600 flex items-center gap-2 transition-colors">
-          🗑️ 删除选中节点
-        </button>
-      </div>
-</template>
+            </template>
           </el-popconfirm>
           <select v-model="currentFlow.status" @change="saveFlowMeta" class="border rounded px-2 py-1 text-sm">
             <option value="draft">草稿</option>
             <option value="active">运行中</option>
             <option value="archived">已归档</option>
           </select>
-          <button @click="saveGraph" class="bg-blue-600 text-white px-3 py-1 rounded text-sm hover:bg-blue-700">💾 保存</button>
+          <button @click="saveGraph" class="bg-blue-600 text-white px-3 py-1 rounded text-sm hover:bg-blue-700 flex items-center gap-1.5">
+            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
+            保存
+          </button>
           <el-popconfirm title="确定删除此流程？" @confirm="() => deleteFlow(currentFlow.id)" width="200">
             <template #reference>
-              <button class="bg-red-50 text-red-600 px-3 py-1 rounded text-sm hover:bg-red-100">删除</button>
-            
-      <!-- 右键菜单 -->
-      <div v-if="contextMenu.show" 
-           class="fixed bg-white rounded-lg shadow-xl border border-gray-200 z-50 py-1 min-w-[180px]"
-           :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
-           @click.stop>
-        <button @click="arrangeNodes(); hideContextMenu()" class="w-full text-left px-4 py-2.5 text-sm hover:bg-blue-50 text-gray-700 flex items-center gap-2 transition-colors">
-          ✨ 整理节点 (自动排版)
-        </button>
-        <div class="border-t border-gray-100 my-1"></div>
-        <button @click="deleteSelectedNodes(); hideContextMenu()" class="w-full text-left px-4 py-2.5 text-sm hover:bg-red-50 text-red-600 flex items-center gap-2 transition-colors">
-          🗑️ 删除选中节点
-        </button>
-      </div>
-</template>
+              <button class="bg-red-50 text-red-600 px-3 py-1 rounded text-sm hover:bg-red-100 flex items-center gap-1.5">
+                <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                删除
+              </button>
+            </template>
           </el-popconfirm>
         </div>
       </div>
 
-      <div class="flex flex-col h-[calc(100vh-130px)]">
+      <div class="flex flex-col h-[calc(100vh-130px)]" :class="{ 'pb-14': currentFlow && executions.length > 0 }">
   <!-- Main Content (Canvas + Sidebar) -->
   <div class="flex flex-1 min-h-0">
         <!-- 节点面板 -->
@@ -96,15 +78,30 @@
             <input v-model="nodeSearch" placeholder="搜索节点..." class="w-full border rounded px-2 py-1 text-xs bg-white" />
           </div>
           
-          <div class="flex-1 overflow-y-auto p-2 space-y-3">
-            <!-- 分类 -->
-            <div v-for="cat in filteredCategories" :key="cat.name">
-              <div class="text-xs font-semibold text-gray-500 mb-1 px-1">{{ cat.icon }} {{ cat.name }}</div>
-              <div class="space-y-1">
+          <div class="flex-1 overflow-y-auto p-2">
+            <!-- 可折叠分类 -->
+            <div v-for="cat in filteredCategories" :key="cat.name" class="mb-2">
+              <div @click="toggleCategory(cat.name)"
+                class="flex items-center gap-2 px-2 py-2 rounded cursor-pointer hover:bg-gray-200/50 transition select-none">
+                <svg class="w-3.5 h-3.5 text-gray-400 transition-transform flex-shrink-0"
+                  :class="{ 'rotate-90': expandedCats.has(cat.name) }"
+                  viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="9 18 15 12 9 6"></polyline>
+                </svg>
+                <svg class="w-4 h-4 text-gray-600 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="3" y="3" width="7" height="7"></rect>
+                  <rect x="14" y="3" width="7" height="7"></rect>
+                  <rect x="14" y="14" width="7" height="7"></rect>
+                  <rect x="3" y="14" width="7" height="7"></rect>
+                </svg>
+                <span class="text-xs font-semibold text-gray-500 flex-1">{{ cat.name }}</span>
+                <span class="text-[10px] text-gray-400">{{ cat.templates.length }}</span>
+              </div>
+              <div v-show="expandedCats.has(cat.name)" class="space-y-1 pl-2 mt-1">
                 <div v-for="tpl in cat.templates" :key="tpl.type + tpl.id"
                   @click="addNodeFromTemplate(tpl)"
-                  class="group flex items-start gap-2 px-2 py-1.5 rounded cursor-pointer hover:bg-white hover:shadow-sm transition border border-transparent hover:border-gray-200">
-                  <span class="text-base mt-0.5">{{ tpl.icon }}</span>
+                  class="group flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer hover:bg-white hover:shadow-sm transition border border-transparent hover:border-gray-200">
+                  <span class="w-4 h-4 flex-shrink-0" v-html="tplNodeIcon(tpl.type)"></span>
                   <div class="min-w-0 flex-1">
                     <div class="text-xs font-medium truncate">{{ tpl.name }}</div>
                     <div class="text-[10px] text-gray-400 truncate">{{ tpl.desc }}</div>
@@ -200,49 +197,64 @@
                 <button class="flex-1 text-sm py-1.5 rounded bg-red-50 text-red-600 hover:bg-red-100 border border-red-200">
                   删除节点
                 </button>
-              
-      <!-- 右键菜单 -->
-      <div v-if="contextMenu.show" 
-           class="fixed bg-white rounded-lg shadow-xl border border-gray-200 z-50 py-1 min-w-[180px]"
-           :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
-           @click.stop>
-        <button @click="arrangeNodes(); hideContextMenu()" class="w-full text-left px-4 py-2.5 text-sm hover:bg-blue-50 text-gray-700 flex items-center gap-2 transition-colors">
-          ✨ 整理节点 (自动排版)
-        </button>
-        <div class="border-t border-gray-100 my-1"></div>
-        <button @click="deleteSelectedNodes(); hideContextMenu()" class="w-full text-left px-4 py-2.5 text-sm hover:bg-red-50 text-red-600 flex items-center gap-2 transition-colors">
-          🗑️ 删除选中节点
-        </button>
-      </div>
-</template>
+              </template>
             </el-popconfirm>
           </div>
         </div>
       </div>
 
-      </div>
+    </div>
 
-      <!-- 执行历史面板 -->
-      <div v-if="executions.length > 0" class="border-t border-gray-200 bg-gray-50 max-h-[250px] overflow-y-auto">
-        <div class="p-3 border-b border-gray-200 bg-white sticky top-0 z-10 flex justify-between items-center">
-          <h3 class="font-medium text-sm text-gray-600">📜 执行历史</h3>
-          <span class="text-xs text-gray-400">共 {{ executions.length }} 次</span>
+    <!-- 底部执行状态栏 (固定在视口底部) -->
+    <div v-if="currentFlow && executions.length > 0" 
+      class="fixed bottom-0 left-16 md:left-52 right-72 z-40 bg-white border-t border-gray-200 shadow-xl transition-all duration-300"
+      :class="execPanelExpanded ? 'max-h-[220px]' : 'max-h-[52px]'"
+      style="box-shadow: 0 -4px 20px rgba(0,0,0,0.08);">
+      
+      <!-- 顶部单行 (点击展开/收起) -->
+      <div @click="execPanelExpanded = !execPanelExpanded"
+        class="flex items-center justify-between px-4 py-2.5 cursor-pointer hover:bg-gray-50 transition select-none border-b border-gray-100">
+        <div class="flex items-center gap-3">
+          <svg class="w-4 h-4 text-gray-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"></circle>
+            <polyline points="12 6 12 12 16 14"></polyline>
+          </svg>
+          <span class="text-sm font-medium text-gray-700">
+            最近执行: #{{ executions[0].id }} 
+            <span :class="execStatusBadge(executions[0].status)" class="px-1.5 py-0.5 rounded ml-1">{{ executions[0].status }}</span>
+          </span>
+          <span class="text-xs text-gray-400">{{ formatTime(executions[0].started_at) }}</span>
         </div>
-        <h3 class="font-medium mb-3 text-sm text-gray-600">📜 执行历史</h3>
-        <div class="space-y-2 max-h-48 overflow-y-auto">
-          <div v-for="exec in executions" :key="exec.id"
-            class="bg-white rounded p-3 text-sm cursor-pointer hover:bg-gray-100 border border-gray-200"
-            @click="showExecDetail(exec)">
-            <div class="flex justify-between items-center">
-              <span class="font-medium">#{{ exec.id }} - {{ exec.status }}</span>
-              <span class="text-xs text-gray-400">{{ formatTime(exec.started_at) }}</span>
-            </div>
-            <div v-if="exec.error" class="text-xs text-red-500 mt-1">{{ exec.error }}</div>
+        <svg class="w-4 h-4 text-gray-400 transition-transform duration-300"
+          :class="{ 'rotate-180': execPanelExpanded }"
+          viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="6 9 12 15 18 9"></polyline>
+        </svg>
+      </div>
+      
+      <!-- 展开后显示最近3次执行记录 -->
+      <div v-show="execPanelExpanded" class="overflow-y-auto max-h-[168px] p-2 space-y-1.5">
+        <div v-for="exec in executions.slice(0, 3)" :key="exec.id"
+          @click="showExecDetail(exec)"
+          class="flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer hover:bg-blue-50 transition border border-gray-100 bg-white">
+          <div class="flex items-center gap-2">
+            <span class="text-xs font-medium text-gray-700">#{{ exec.id }}</span>
+            <span :class="execStatusBadge(exec.status)" class="px-1.5 py-0.5 rounded text-xs">{{ exec.status }}</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="text-xs text-gray-400">{{ formatTime(exec.started_at) }}</span>
+            <svg class="w-3.5 h-3.5 text-gray-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M5 12h14"></path><path d="M12 5l7 7-7 7"></path>
+            </svg>
           </div>
         </div>
+        <div v-if="executions.length > 3" class="text-center text-xs text-gray-400 py-1">
+          共 {{ executions.length }} 次执行 · 点击查看详情
+        </div>
       </div>
+    </div>
 
-      <!-- 执行详情弹窗 -->
+    <!-- 执行详情弹窗 -->
       <div v-if="showDetail" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
         <div class="bg-white rounded-lg p-6 w-full max-w-2xl max-h-[80vh] flex flex-col">
           <div class="flex justify-between items-center mb-4 border-b pb-2">
@@ -262,9 +274,10 @@
             <div v-for="step in execSteps" :key="step.id"
               class="flex items-center gap-3 p-3 rounded border bg-white"
               :class="stepStatusColor(step.status)">
-              <span class="text-xl">{{ stepTypeIcon(step.node_type) }}</span>
+              <span class="text-xl" v-html="stepTypeIcon(step.node_type)"></span>
               <div class="flex-1">
                 <div class="font-medium">{{ step.node_name }} <span class="text-xs text-gray-400">({{ step.node_type }})</span></div>
+                <div class="text-[10px] text-gray-400 mt-0.5">开始: {{ formatTime(step.started_at) }}</div>
                 <div v-if="step.output" class="text-xs text-gray-600 mt-1 font-mono bg-gray-50 p-1 rounded max-h-20 overflow-auto">{{ step.output }}</div>
                 <div v-if="step.error" class="text-xs text-red-500 mt-1">{{ step.error }}</div>
               </div>
@@ -276,21 +289,20 @@
     </div>
   </div>
 
-      <!-- 右键菜单 -->
-      <div v-if="contextMenu.show" 
-           class="fixed bg-white rounded-lg shadow-xl border border-gray-200 z-50 py-1 min-w-[180px]"
-           :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
-           @click.stop>
-        <button @click="arrangeNodes(); hideContextMenu()" class="w-full text-left px-4 py-2.5 text-sm hover:bg-blue-50 text-gray-700 flex items-center gap-2 transition-colors">
-          ✨ 整理节点 (自动排版)
-        </button>
-        <div class="border-t border-gray-100 my-1"></div>
-        <button @click="deleteSelectedNodes(); hideContextMenu()" class="w-full text-left px-4 py-2.5 text-sm hover:bg-red-50 text-red-600 flex items-center gap-2 transition-colors">
-          🗑️ 删除选中节点
-        </button>
-      </div>
+  <!-- 右键菜单 -->
+  <div v-if="contextMenu.show" 
+       class="fixed bg-white rounded-lg shadow-xl border border-gray-200 z-50 py-1 min-w-[180px]"
+       :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
+       @click.stop>
+    <button @click="arrangeNodes(); hideContextMenu()" class="w-full text-left px-4 py-2.5 text-sm hover:bg-blue-50 text-gray-700 flex items-center gap-2 transition-colors">
+      ✨ 整理节点 (自动排版)
+    </button>
+    <div class="border-t border-gray-100 my-1"></div>
+    <button @click="deleteSelectedNodes(); hideContextMenu()" class="w-full text-left px-4 py-2.5 text-sm hover:bg-red-50 text-red-600 flex items-center gap-2 transition-colors">
+      🗑️ 删除选中节点
+    </button>
+  </div>
 </template>
-
 <script setup>
 import { ref, onMounted, onUnmounted, watch, computed } from 'vue'
 import { VueFlow, useVueFlow } from '@vue-flow/core'
@@ -316,6 +328,7 @@ const executing = ref(false)
 const showDetail = ref(false)
 const currentExec = ref(null)
 const execSteps = ref([])
+const execPanelExpanded = ref(false)
 
 // Agent 终端列表
 const agents = ref([])
@@ -325,6 +338,27 @@ const nodeSearch = ref('')
 // 节点右键菜单状态
 const nodeContextMenu = ref({ visible: false, x: 0, y: 0, node: null });
 const contextMenu = ref({ show: false, x: 0, y: 0 })
+
+// 左侧分类折叠状态
+const expandedCats = ref(new Set(['基础'])) // 默认展开「基础」
+const toggleCategory = (name) => {
+  if (expandedCats.value.has(name)) expandedCats.value.delete(name)
+  else expandedCats.value.add(name)
+  expandedCats.value = new Set(expandedCats.value) // trigger reactivity
+}
+
+// 左侧面板节点图标 (SVG for v-html)
+const tplNodeIcon = (type) => {
+  const icons = {
+    agent: '<svg class="w-4 h-4 text-gray-500 group-hover:text-blue-500 transition-colors" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="12" cy="5" r="2"/><path d="M12 7v4"/></svg>',
+    condition: '<svg class="w-4 h-4 text-gray-500 group-hover:text-blue-500 transition-colors" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>',
+    merge: '<svg class="w-4 h-4 text-gray-500 group-hover:text-blue-500 transition-colors" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>',
+    trigger: '<svg class="w-4 h-4 text-gray-500 group-hover:text-blue-500 transition-colors" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>',
+    webhook: '<svg class="w-4 h-4 text-gray-500 group-hover:text-blue-500 transition-colors" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>',
+    code: '<svg class="w-4 h-4 text-gray-500 group-hover:text-blue-500 transition-colors" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>',
+  }
+  return icons[type] || '<svg class="w-4 h-4 text-gray-500 group-hover:text-blue-500 transition-colors" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/></svg>'
+}
 
 // 节点模板定义 (静态)
 const staticNodeTemplates = [
@@ -468,7 +502,7 @@ const flowNodes = computed(() => {
     return {
       id: n.node_id,
       type: 'default',
-      label: `${nodeTypeIcon(n.type)} ${n.name}${status ? ' [' + statusLabel(status) + ']' : ''}`,
+      label: `${nodeTypeIcon(n.type)} ${sanitizeNodeName(n.name)}${status ? ' [' + statusLabel(status) + ']' : ''}`,
       position: { x: n.position_x || 0, y: n.position_y || 0 },
       style: { 
         background: bg, 
@@ -888,6 +922,17 @@ const nodeTextColor = (type) => {
 const nodeTypeIcon = (type) => {
   return { agent: '🤖', condition: '🔀', merge: '🔗', trigger: '⚡', webhook: '🔌', code: '💻' }[type] || '📦'
 }
+
+// 清理可能混入 SVG 代码的节点名称（历史 Bug 修复）
+const sanitizeNodeName = (name) => {
+  if (!name) return '未命名节点'
+  if (typeof name !== 'string') return String(name)
+  // 如果名称包含 <svg 标签，说明数据损坏，重置
+  if (name.includes('<svg') || name.includes('viewBox')) {
+    return '已修复节点'
+  }
+  return name
+}
 const flowStatusClass = (s) => {
   return { draft: 'bg-gray-100 text-gray-600', active: 'bg-green-100 text-green-700', archived: 'bg-yellow-100 text-yellow-700' }[s] || ''
 }
@@ -902,7 +947,13 @@ const stepStatusColor = (s) => {
   return { running: 'border-blue-300 bg-blue-50', completed: 'border-green-300 bg-green-50', failed: 'border-red-300 bg-red-50', skipped: 'border-gray-200 bg-gray-50' }[s] || ''
 }
 const stepTypeIcon = (t) => {
-  return { agent: '🤖', condition: '🔀', merge: '🔗', trigger: '⚡' }[t] || '📦'
+  const icons = {
+    agent: '<svg class="w-5 h-5 inline" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="10" rx="2"></rect><circle cx="12" cy="5" r="2"></circle><path d="M12 7v4"></path></svg>',
+    condition: '<svg class="w-5 h-5 inline" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>',
+    merge: '<svg class="w-5 h-5 inline" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"></circle><circle cx="6" cy="12" r="3"></circle><circle cx="18" cy="19" r="3"></circle><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line></svg>',
+    trigger: '<svg class="w-5 h-5 inline" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>',
+  }
+  return icons[t] || '📦'
 }
 
 
