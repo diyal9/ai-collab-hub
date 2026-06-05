@@ -14,6 +14,7 @@
     "@vue-flow/minimap": "^1.5.4",
     "axios": "^1.5.0",
     "element-plus": "^2.3.14",
+    "marked": "^9.1.6",
     "vue": "^3.3.4",
     "vue-router": "^4.2.4"
   },

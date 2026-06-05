@@ -1,3 +1,4 @@
+<!-- DEBUG: TEST BUILD -->
 <template>
   <div>
     <div class="flex justify-between items-center mb-6">
@@ -139,50 +140,148 @@
           </div>
           
           <div>
+            <label class="block text-xs text-gray-500 mb-1">节点 ID</label>
+            <div class="w-full border rounded px-2 py-1 text-xs font-mono bg-gray-100 text-gray-600 select-all" title="用于变量引用：${node_id}">{{ selectedNodeData.node_id }}</div>
+          </div>
+          <div>
             <label class="block text-xs text-gray-500 mb-1">名称</label>
-            <input v-model="selectedNodeData.label" class="w-full border rounded px-2 py-1 text-sm" />
+            <input :value="selectedNodeData.label" @input="saveNodeName($event.target.value)" class="w-full border rounded px-2 py-1 text-sm" />
           </div>
           <div>
             <label class="block text-xs text-gray-500 mb-1">类型</label>
             <select v-model="selectedNodeData.type" class="w-full border rounded px-2 py-1 text-sm">
               <option value="agent">Agent</option>
+              <option value="sandbox">Sandbox</option>
               <option value="condition">Condition</option>
               <option value="merge">Merge</option>
               <option value="trigger">Trigger</option>
               <option value="webhook">Webhook</option>
+              <option value="approval">Approval (人在回路)</option>
               <option value="code">Code</option>
             </select>
           </div>
-          <div v-if="selectedNodeData.type === 'agent'">
-            <label class="block text-xs text-gray-500 mb-1">关联 Agent</label>
-            <select v-model="selectedNodeData._selectedAgentId" @change="onAgentChange" class="w-full border rounded px-2 py-1 text-sm">
-              <option value="">自动匹配（任意空闲 Agent）</option>
-              <option v-for="agent in agents" :key="agent.id" :value="String(agent.id)">
-                {{ agent.name }} ({{ agent.status }})
-              </option>
-            </select>
+          <!-- ─── Agent 节点增强配置 ─── -->
+          <div v-if="selectedNodeData.type === 'agent'" class="space-y-3">
+            <div>
+              <label class="block text-xs text-gray-500 mb-1">角色 / System</label>
+              <div class="text-xs text-gray-600 bg-gray-50 p-2 rounded border truncate h-8 flex items-center" :title="agentSummary.role">{{ agentSummary.role || '未配置' }}</div>
+            </div>
+            <div>
+              <label class="block text-xs text-gray-500 mb-1">任务 / Goal</label>
+              <div class="text-xs text-gray-600 bg-gray-50 p-2 rounded border h-12 overflow-auto whitespace-pre-wrap mb-1">{{ agentSummary.instruction || '未配置' }}</div>
+              <button @click="openAgentEditor" class="w-full bg-purple-50 text-purple-600 hover:bg-purple-100 border border-purple-200 py-2 rounded text-sm font-medium flex items-center justify-center gap-1.5 transition-all shadow-sm">
+                <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path></svg>
+                编辑结构化 Prompt
+              </button>
+            </div>
+            <div v-if="agentSummary.constraints" class="mt-1">
+               <label class="block text-[10px] text-gray-400 mb-0.5">约束 / Constraints</label>
+               <div class="text-[10px] text-gray-500 bg-gray-50 p-1.5 rounded border h-8 overflow-auto whitespace-pre-wrap">{{ agentSummary.constraints }}</div>
+            </div>
+            <div v-if="agentSummary.format" class="mt-1">
+               <label class="block text-[10px] text-gray-400 mb-0.5">输出格式 / Output</label>
+               <div class="text-[10px] text-gray-500 bg-gray-50 p-1.5 rounded border h-8 overflow-auto whitespace-pre-wrap">{{ agentSummary.format }}</div>
+            </div>
           </div>
           <div>
-            <label class="block text-xs text-gray-500 mb-1">配置 / Prompt</label>
-            <textarea v-model="selectedNodeData._rawConfig" class="w-full border rounded px-2 py-1 text-xs font-mono" rows="6" placeholder="JSON 配置或 Prompt..."></textarea>
+            <label class="block text-xs text-gray-500 mb-1">超时 (分钟)</label>
+            <input v-model.number="selectedNodeData._timeout" type="number" class="w-full border rounded px-2 py-1 text-sm" min="1" max="120" />
           </div>
+          <!-- ─── Sandbox 节点增强配置 ─── -->
+          <div v-if="selectedNodeData.type === 'sandbox'" class="space-y-3">
+            <div>
+              <label class="block text-xs text-gray-500 mb-1">Sandbox ID</label>
+              <select :value="selectedNodeData.sandbox_id" @change="updateNodeField('sandbox_id', $event.target.value)" class="w-full border rounded px-2 py-1 text-sm">
+                <option value="">-- 选择 Sandbox --</option>
+                <option v-for="sb in onlineSandboxes" :key="sb.id" :value="sb.name">{{ sb.name }} ({{ sb.status }})</option>
+                <option v-if="selectedNodeData.sandbox_id && !onlineSandboxes.find(s=>s.name===selectedNodeData.sandbox_id)" :value="selectedNodeData.sandbox_id">{{ selectedNodeData.sandbox_id }} (离线)</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-xs text-gray-500 mb-1">执行器</label>
+              <select :value="selectedNodeData.executor" @change="updateNodeField('executor', $event.target.value)" class="w-full border rounded px-2 py-1 text-sm">
+                <option value="shell">Shell</option>
+                <option value="codex">Codex</option>
+                <option value="cursor">Cursor</option>
+                <option value="aider">Aider</option>
+                <option value="claude">Claude Code</option>
+              </select>
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+               <div>
+                 <label class="block text-xs text-gray-500 mb-1">Git 分支</label>
+                 <input :value="selectedNodeData.git_branch" @input="updateNodeField('git_branch', $event.target.value)" class="w-full border rounded px-2 py-1 text-sm" placeholder="develop" />
+               </div>
+               <div>
+                 <label class="block text-xs text-gray-500 mb-1">工作目录</label>
+                 <input :value="selectedNodeData.work_dir" @input="updateNodeField('work_dir', $event.target.value)" class="w-full border rounded px-2 py-1 text-sm" placeholder="/tmp/agent-workspace" />
+               </div>
+            </div>
+            <div>
+              <label class="block text-xs text-gray-500 mb-1">Git 仓库地址</label>
+              <input :value="selectedNodeData.git_url" @input="updateNodeField('git_url', $event.target.value)" class="w-full border rounded px-2 py-1 text-sm" placeholder="git@gitlab.com:team/repo.git" />
+            </div>
+            
+            <!-- 命令 / Prompt 概览 -->
+            <label class="block text-xs text-gray-500 mb-1">命令 / Prompt</label>
+            <div class="bg-gray-50 p-2 rounded border text-xs font-mono h-16 overflow-auto whitespace-pre-wrap mb-1">{{ selectedNodeData.command || '未配置' }}</div>
+            <div class="flex gap-2">
+              <button @click="openCommandEditor" class="flex-1 bg-blue-50 text-blue-600 hover:bg-blue-100 border border-blue-200 py-1.5 rounded text-xs font-medium flex items-center justify-center gap-1 transition-all">
+                <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path></svg>
+                编辑命令
+              </button>
+            </div>
+            <p class="text-xs text-gray-400 mt-1">💡 支持变量引用、模板加载</p>
+          </div>
+          
+          <!-- Approval 节点配置 -->
+          <!-- ─── Webhook 节点增强配置 (概览 + 弹窗编辑) ─── -->
+          <div v-if="selectedNodeData.type === 'webhook'" class="space-y-3">
+            <div>
+              <label class="block text-xs text-gray-500 mb-1">Webhook URL</label>
+              <div class="text-xs text-gray-600 bg-gray-50 p-2 rounded border truncate" :title="selectedNodeData.url">
+                {{ selectedNodeData.url || '未配置' }}
+              </div>
+            </div>
+            
+            <div class="flex gap-2">
+              <div class="flex-1 bg-gray-50 p-2 rounded border text-center cursor-pointer hover:bg-blue-50 transition-colors" @click="openWebhookEditor('headers')">
+                <span class="text-[10px] text-gray-400 block">Headers</span>
+                <span class="text-xs font-medium text-blue-600">{{ webhookSummary.headers }}</span>
+              </div>
+              <div class="flex-1 bg-gray-50 p-2 rounded border text-center cursor-pointer hover:bg-blue-50 transition-colors" @click="openWebhookEditor('body')">
+                <span class="text-[10px] text-gray-400 block">Body</span>
+                <span class="text-xs font-medium text-blue-600">{{ webhookSummary.body }}</span>
+              </div>
+            </div>
 
-          <!-- 动态模板的 Schema 渲染 -->
-          <div v-if="currentTemplateForNode">
-            <label class="block text-xs text-gray-500 mb-1">节点参数 (动态表单)</label>
-            <div v-for="field in currentTemplateForNode.schema" :key="field.key" class="mb-2">
-              <span class="text-xs text-gray-400">{{ field.label }} ({{ field.key }})</span>
-              <div v-if="field.type === 'select'">
-                <select v-model="selectedNodeData['_' + field.key]" class="w-full border rounded px-2 py-1 text-sm">
-                  <option v-for="opt in field.options" :value="opt">{{ opt }}</option>
-                </select>
-              </div>
-              <div v-else-if="field.type === 'boolean'">
-                <input type="checkbox" v-model="selectedNodeData['_' + field.key]" class="w-4 h-4" />
-              </div>
-              <div v-else>
-                <input v-model="selectedNodeData['_' + field.key]" class="w-full border rounded px-2 py-1 text-sm" />
-              </div>
+            <button @click="openWebhookEditor()" class="w-full bg-blue-50 text-blue-600 hover:bg-blue-100 border border-blue-200 py-2 rounded text-sm font-medium flex items-center justify-center gap-1.5 transition-all shadow-sm">
+              <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path></svg>
+              编辑完整配置
+            </button>
+          </div>
+          
+          <!-- Approval 节点配置 -->
+          <div v-if="selectedNodeData.type === 'approval'" class="space-y-3">
+            <div>
+              <label class="block text-xs text-gray-500 mb-1">飞书 Webhook URL</label>
+              <div class="text-xs text-gray-600 bg-gray-50 p-2 rounded border truncate" :title="selectedNodeData.webhook_url">{{ selectedNodeData.webhook_url || '未配置' }}</div>
+            </div>
+            <div>
+              <label class="block text-xs text-gray-500 mb-1">卡片标题</label>
+              <div class="text-xs text-gray-600 bg-gray-50 p-2 rounded border">{{ selectedNodeData.card_title || '未配置' }}</div>
+            </div>
+            <div>
+              <label class="block text-xs text-gray-500 mb-1">卡片内容</label>
+              <div class="bg-gray-50 p-2 rounded border text-xs h-20 overflow-auto whitespace-pre-wrap">{{ selectedNodeData.card_body || '未配置' }}</div>
+              <button @click="openApprovalEditor" class="w-full mt-2 bg-blue-50 text-blue-600 hover:bg-blue-100 border border-blue-200 py-1.5 rounded text-xs font-medium flex items-center justify-center gap-1 transition-all">
+                <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path></svg>
+                编辑内容与预览
+              </button>
+            </div>
+            <div>
+              <label class="block text-xs text-gray-500 mb-1">审批超时 (分钟)</label>
+              <input :value="selectedNodeData.timeout_minutes || 1440" @input="updateNodeField('timeout_minutes', Number($event.target.value))" class="w-full border rounded px-2 py-1 text-sm" type="number" min="1" />
             </div>
           </div>
           
@@ -207,7 +306,7 @@
 
     <!-- 底部执行状态栏 (固定在视口底部) -->
     <div v-if="currentFlow && executions.length > 0" 
-      class="fixed bottom-0 left-16 md:left-52 right-72 z-40 bg-white border-t border-gray-200 shadow-xl transition-all duration-300"
+      class="fixed bottom-0 left-16 md:left-52 right-0 z-40 bg-white border-t border-gray-200 shadow-xl transition-all duration-300"
       :class="execPanelExpanded ? 'max-h-[220px]' : 'max-h-[52px]'"
       style="box-shadow: 0 -4px 20px rgba(0,0,0,0.08);">
       
@@ -302,6 +401,207 @@
       🗑️ 删除选中节点
     </button>
   </div>
+
+  <!-- ─── Webhook 配置弹窗 ─── -->
+  <el-dialog v-model="webhookDialogVisible" title="Webhook 配置" width="850px" :close-on-click-modal="false" top="5vh">
+    <div class="space-y-4">
+      <!-- URL -->
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">请求 URL</label>
+        <input v-model="tempWebhookUrl" class="w-full border rounded px-3 py-2 text-sm font-mono bg-gray-50 focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/..." />
+      </div>
+      
+      <el-tabs v-model="webhookActiveTab">
+        <!-- Headers Tab -->
+        <el-tab-pane label="Headers" name="headers">
+          <div class="flex justify-between items-center mb-2">
+             <span class="text-xs text-gray-400">支持 ${node_xxx} 变量引用</span>
+             <div class="flex gap-2">
+               <button @click="formatJson('headers')" class="text-xs text-blue-600 hover:text-blue-800 font-medium flex items-center gap-1">
+                 <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"></path></svg> 格式化
+               </button>
+             </div>
+          </div>
+          <div class="relative">
+            <textarea ref="headersTextarea" v-model="tempHeadersJson" @input="validateJson('headers')" class="w-full border rounded px-3 py-2 text-xs font-mono bg-gray-50 h-40 focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all pr-12"></textarea>
+            <div class="absolute right-2 top-2">
+              <span v-if="jsonErrors.headers" class="text-red-500 text-xs bg-white px-1 rounded shadow">❌</span>
+              <span v-else-if="tempHeadersJson.trim()" class="text-green-500 text-xs bg-white px-1 rounded shadow">✅</span>
+            </div>
+          </div>
+          <div v-if="jsonErrors.headers" class="text-xs text-red-500 mt-1">{{ jsonErrors.headers }}</div>
+          
+          <div class="mt-3">
+             <span class="text-xs text-gray-500">快捷插入变量:</span>
+             <div class="flex flex-wrap gap-1.5 mt-1.5">
+               <button v-for="v in availableVariables" :key="v" @click="insertVar('headers', v)" class="text-[10px] bg-gray-100 hover:bg-blue-100 px-2 py-0.5 rounded border text-blue-600 transition-colors">{{v}}</button>
+             </div>
+          </div>
+        </el-tab-pane>
+
+        <!-- Body Tab -->
+        <el-tab-pane label="Body" name="body">
+          <div class="flex justify-between items-center mb-2">
+             <span class="text-xs text-gray-400">支持 ${node_xxx} 变量引用</span>
+             <button @click="formatJson('body')" class="text-xs text-blue-600 hover:text-blue-800 font-medium flex items-center gap-1">
+               <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"></path></svg> 格式化
+             </button>
+          </div>
+          <div class="relative">
+            <textarea ref="bodyTextarea" v-model="tempBodyJson" @input="validateJson('body')" class="w-full border rounded px-3 py-2 text-xs font-mono bg-gray-50 h-60 focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all pr-12"></textarea>
+            <div class="absolute right-2 top-2">
+              <span v-if="jsonErrors.body" class="text-red-500 text-xs bg-white px-1 rounded shadow">❌</span>
+              <span v-else-if="tempBodyJson.trim()" class="text-green-500 text-xs bg-white px-1 rounded shadow">✅</span>
+            </div>
+          </div>
+          <div v-if="jsonErrors.body" class="text-xs text-red-500 mt-1">{{ jsonErrors.body }}</div>
+
+          <div class="mt-3">
+             <span class="text-xs text-gray-500">快捷插入变量:</span>
+             <div class="flex flex-wrap gap-1.5 mt-1.5">
+               <button v-for="v in availableVariables" :key="v" @click="insertVar('body', v)" class="text-[10px] bg-gray-100 hover:bg-blue-100 px-2 py-0.5 rounded border text-blue-600 transition-colors">{{v}}</button>
+             </div>
+          </div>
+        </el-tab-pane>
+      </el-tabs>
+    </div>
+    <template #footer>
+      <span class="dialog-footer">
+        <el-button @click="webhookDialogVisible = false">取消</el-button>
+        <el-button type="primary" :disabled="!!jsonErrors.headers || !!jsonErrors.body" @click="saveWebhookConfig">保存配置</el-button>
+      </span>
+    </template>
+  </el-dialog>
+
+  <!-- ─── Sandbox 命令弹窗 ─── -->
+  <el-dialog v-model="commandDialogVisible" title="Sandbox 命令 / Prompt 编辑" width="900px" :close-on-click-modal="false" top="5vh">
+    <div class="flex flex-col h-[60vh]">
+      <div class="flex-1 flex gap-4">
+        <!-- 编辑区 -->
+        <div class="flex-1 flex flex-col">
+          <div class="flex justify-between items-center mb-2">
+             <span class="text-sm font-medium text-gray-700">命令内容</span>
+             <div class="flex gap-2">
+               <select @change="onTemplateSelectFromDialog($event)" class="border rounded px-2 py-1 text-xs bg-white">
+                 <option value="">📄 加载模板...</option>
+                 <option v-for="t in promptTemplates" :key="t.id" :value="t.name">{{ t.name }} (v{{t.version}})</option>
+               </select>
+             </div>
+          </div>
+          <textarea ref="commandTextarea" v-model="tempCommand" @input="checkCommandVariables" class="flex-1 w-full border rounded px-3 py-2 text-xs font-mono bg-gray-50 focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all resize-none"></textarea>
+          <div class="mt-2 flex gap-1.5 flex-wrap">
+            <span class="text-xs text-gray-500 py-1">插入变量:</span>
+            <button v-for="v in availableVariables" :key="v" @click="insertVar('command', v)" class="text-[10px] bg-gray-100 hover:bg-blue-100 px-2 py-0.5 rounded border text-blue-600 transition-colors">{{v}}</button>
+          </div>
+        </div>
+
+        <!-- 预览区 -->
+        <div class="w-80 border-l pl-4 flex flex-col">
+          <span class="text-sm font-medium text-gray-700 mb-2">变量替换预览</span>
+          <div class="flex-1 bg-gray-50 rounded p-3 text-xs font-mono whitespace-pre-wrap overflow-auto border">
+            <div v-if="commandPreview" class="text-gray-700">{{ commandPreview }}</div>
+            <div v-else class="text-gray-400 italic">输入命令后显示预览...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <template #footer>
+      <span class="dialog-footer">
+        <el-button @click="commandDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="saveCommandConfig">保存</el-button>
+      </span>
+    </template>
+  </el-dialog>
+
+  <!-- ─── Approval Markdown 预览弹窗 ─── -->
+  <el-dialog v-model="approvalDialogVisible" title="审批卡片内容 (Markdown)" width="1000px" :close-on-click-modal="false" top="5vh">
+    <div class="flex gap-4 h-[60vh]">
+      <div class="flex-1 flex flex-col">
+        <span class="text-sm font-medium text-gray-700 mb-2">编辑</span>
+        <textarea ref="approvalTextarea" v-model="tempApprovalBody" class="flex-1 w-full border rounded px-3 py-2 text-xs font-mono bg-gray-50 focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all resize-none"></textarea>
+        <div class="mt-2 flex gap-1.5 flex-wrap">
+          <span class="text-xs text-gray-500 py-1">插入变量:</span>
+          <button v-for="v in availableVariables" :key="v" @click="insertVar('approval', v)" class="text-[10px] bg-gray-100 hover:bg-blue-100 px-2 py-0.5 rounded border text-blue-600 transition-colors">{{v}}</button>
+        </div>
+      </div>
+      <div class="flex-1 border-l pl-4 flex flex-col">
+        <span class="text-sm font-medium text-gray-700 mb-2">实时预览</span>
+        <div class="flex-1 bg-white rounded p-4 overflow-auto border prose prose-sm max-w-none" v-html="renderedMarkdown"></div>
+      </div>
+    </div>
+    <template #footer>
+      <span class="dialog-footer">
+        <el-button @click="approvalDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="saveApprovalConfig">保存</el-button>
+      </span>
+    </template>
+  </el-dialog>
+
+  <!-- ─── Agent 结构化 Prompt 弹窗 ─── -->
+  <el-dialog v-model="agentDialogVisible" title="Agent 结构化 Prompt 配置" width="1000px" :close-on-click-modal="false" top="5vh">
+    <div class="flex gap-4 h-[65vh]">
+      <!-- 左侧编辑区 -->
+      <div class="flex-1 flex flex-col space-y-4 overflow-y-auto pr-2">
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">
+            <span class="text-purple-600 mr-1">👤</span> 角色设定 (System)
+          </label>
+          <p class="text-xs text-gray-400 mb-1">定义 AI 的身份、背景知识和语气风格。</p>
+          <textarea v-model="tempAgentRole" class="w-full border rounded px-3 py-2 text-xs font-mono bg-gray-50 h-20 focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all resize-none"></textarea>
+        </div>
+        
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">
+            <span class="text-blue-600 mr-1">🎯</span> 任务目标 (Instruction)
+          </label>
+          <p class="text-xs text-gray-400 mb-1">具体的执行步骤和核心目标。</p>
+          <textarea ref="agentTextarea" v-model="tempAgentInstruction" @input="updateAgentPreview" class="w-full border rounded px-3 py-2 text-xs font-mono bg-gray-50 h-32 focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all resize-none"></textarea>
+          <div class="mt-1 flex gap-1.5 flex-wrap">
+            <span class="text-xs text-gray-500 py-0.5">插入变量:</span>
+            <button v-for="v in availableVariables" :key="v" @click="insertVar('agent_instruction', v)" class="text-[10px] bg-gray-100 hover:bg-blue-100 px-1.5 py-0.5 rounded border text-blue-600 transition-colors">{{v}}</button>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3">
+           <div>
+             <label class="block text-xs font-medium text-gray-700 mb-1">
+               <span class="text-red-600 mr-1">⛔</span> 约束 / Constraints
+             </label>
+             <p class="text-[10px] text-gray-400 mb-1">禁止的行为或限制条件。</p>
+             <textarea v-model="tempAgentConstraints" class="w-full border rounded px-2 py-1 text-xs font-mono bg-gray-50 h-20 focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all resize-none"></textarea>
+           </div>
+           <div>
+             <label class="block text-xs font-medium text-gray-700 mb-1">
+               <span class="text-green-600 mr-1">📦</span> 输出格式 / Output
+             </label>
+             <p class="text-[10px] text-gray-400 mb-1">期望的返回格式 (JSON, Markdown 等)。</p>
+             <textarea v-model="tempAgentFormat" class="w-full border rounded px-2 py-1 text-xs font-mono bg-gray-50 h-20 focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all resize-none"></textarea>
+           </div>
+        </div>
+      </div>
+
+      <!-- 右侧预览区 -->
+      <div class="w-96 border-l pl-4 flex flex-col">
+        <span class="text-sm font-medium text-gray-700 mb-2 flex justify-between">
+          完整 Prompt 预览
+          <button @click="formatAgentPreview" class="text-xs text-blue-600 hover:underline">Markdown 格式化</button>
+        </span>
+        <div class="flex-1 bg-gray-900 text-green-400 rounded p-3 text-[11px] font-mono whitespace-pre-wrap overflow-auto shadow-inner">
+          {{ agentPreviewText }}
+        </div>
+        <div class="mt-2 text-[10px] text-gray-500 flex justify-between">
+           <span>最终长度: {{ agentPreviewText.length }} 字符</span>
+           <span v-if="agentTemplateMatch" class="text-blue-500">已加载模板: {{ agentTemplateMatch }}</span>
+        </div>
+      </div>
+    </div>
+    <template #footer>
+      <span class="dialog-footer">
+        <el-button @click="agentDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="saveAgentConfig">保存配置</el-button>
+      </span>
+    </template>
+  </el-dialog>
 </template>
 <script setup>
 import { ref, onMounted, onUnmounted, watch, computed } from 'vue'
@@ -309,12 +609,14 @@ import { VueFlow, useVueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import '@vue-flow/core/dist/style.css'
 import '@vue-flow/core/dist/theme-default.css'
+import { marked } from 'marked'
 import {
   executeFlow, getFlowExecutions, getExecutionSteps, cancelExecution, validateFlow as apiValidateFlow,
   getFlows, createFlow, updateFlow, deleteFlow as deleteFlowApi,
   getFlowNodes, createFlowNode, updateFlowNode, deleteFlowNode,
   getFlowEdges, createFlowEdge, deleteFlowEdge, saveFlowGraph,
   getTerminals,
+  getPromptTemplates, previewPrompt,
 } from '../api'
 import { ElMessage, ElMessageBox, ElPopconfirm } from 'element-plus'
 
@@ -332,6 +634,28 @@ const execPanelExpanded = ref(false)
 
 // Agent 终端列表
 const agents = ref([])
+const onlineSandboxes = computed(() => agents.value.filter(a => a.status === 'connected'))
+
+// Prompt 模板
+const promptTemplates = ref([])
+const loadPromptTemplates = async () => {
+  try {
+    const { data } = await getPromptTemplates()
+    promptTemplates.value = data
+  } catch {}
+}
+
+// 命令预览与试运行
+const showCommandPreview = ref(false)
+const previewResolvedText = ref('')
+const trialRunning = ref(false)
+const trialOutput = ref('')
+
+// Webhook JSON 编辑器状态
+const webhookMode = ref({ headers: 'json', body: 'json' })
+const webhookForm = ref({ headers: [], body: [] })
+const webhookJson = ref({ headers: '', body: '' })
+const webhookJsonError = ref({ headers: '', body: '' })
 
 // 节点搜索
 const nodeSearch = ref('')
@@ -356,6 +680,7 @@ const tplNodeIcon = (type) => {
     trigger: '<svg class="w-4 h-4 text-gray-500 group-hover:text-blue-500 transition-colors" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>',
     webhook: '<svg class="w-4 h-4 text-gray-500 group-hover:text-blue-500 transition-colors" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>',
     code: '<svg class="w-4 h-4 text-gray-500 group-hover:text-blue-500 transition-colors" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>',
+    sandbox: '<svg class="w-4 h-4 text-gray-500 group-hover:text-blue-500 transition-colors" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 12h16"/><path d="M12 4v16"/></svg>',
   }
   return icons[type] || '<svg class="w-4 h-4 text-gray-500 group-hover:text-blue-500 transition-colors" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/></svg>'
 }
@@ -375,6 +700,8 @@ const staticNodeTemplates = [
     config: { method: 'GET', url: '', timeout_minutes: 10 }},
   { id: 'code', type: 'code', name: '代码执行', icon: '💻', desc: '运行脚本 / 命令', category: '基础',
     config: { language: 'python', code: '', timeout_minutes: 10 }},
+  { id: 'sandbox', type: 'sandbox', name: '沙箱执行 (Sandbox)', icon: '🔒', desc: '通过 Bridge 调度远程 Agent', category: '基础',
+    config: { sandbox_id: 'sandbox-node-1', executor: 'shell', command: '', work_dir: '/tmp', timeout_minutes: 10 }},
   // 代码质量
   { id: 'review', type: 'agent', name: '代码审查', icon: '👁️', desc: '检查规范/安全/性能', category: '代码质量',
     config: { prompt: '检查代码规范、安全漏洞和性能问题', timeout_minutes: 15 }},
@@ -574,6 +901,19 @@ const selectedNodeData = computed({
       timeout_minutes: val._timeout || 30,
     }
 
+    // Sandbox 字段
+    if (val.type === 'sandbox') {
+      cfg.sandbox_id = val.sandbox_id || ''
+      cfg.executor = val.executor || 'shell'
+      cfg.command = val.command || ''
+      cfg.work_dir = val.work_dir || ''
+    }
+    // Code 字段
+    if (val.type === 'code') {
+      cfg.language = val.language || 'python'
+      cfg.code = val.code || ''
+    }
+
     // 合并动态 Schema 字段
     if (currentTemplateForNode.value) {
       currentTemplateForNode.value.schema.forEach(field => {
@@ -584,8 +924,13 @@ const selectedNodeData = computed({
       })
     }
     
-    // 保留用户可能手动修改的其他字段
-    n.config = JSON.stringify({ ...JSON.parse(val._rawConfig || '{}'), ...cfg })
+    // Webhook 节点：直接使用 _rawConfig，不覆盖
+    if (val.type === 'webhook') {
+      n.config = val._rawConfig || '{}'
+    } else {
+      // 保留用户可能手动修改的其他字段
+      n.config = JSON.stringify({ ...JSON.parse(val._rawConfig || '{}'), ...cfg })
+    }
     
     // 触发后端更新
     updateFlowNode(currentFlow.value.id, n.node_id, n)
@@ -635,6 +980,42 @@ const onConnect = (params) => {
   }
   edges.value.push({ ...edge, id: Date.now() })
   createFlowEdge(currentFlow.value.id, edge)
+}
+
+// 显式更新节点字段（避免 computed setter v-model 不触发的问题）
+const updateNodeField = (field, value) => {
+  if (!selectedNodeId.value || !currentFlow.value) return
+  const n = nodes.value.find(x => x.node_id === selectedNodeId.value)
+  if (!n) return
+
+  // 更新本地 config
+  let cfg = {}
+  try { cfg = JSON.parse(n.config || '{}') } catch {}
+  cfg[field] = value
+  n.config = JSON.stringify(cfg)
+
+  // 同步到后端
+  updateFlowNode(currentFlow.value.id, n.node_id, n)
+}
+
+// 保存节点名称（name 字段不在 config 内，需要单独处理）
+const saveNodeName = (value) => {
+  if (!selectedNodeId.value || !currentFlow.value) return
+  const n = nodes.value.find(x => x.node_id === selectedNodeId.value)
+  if (!n) return
+
+  n.name = value
+  updateFlowNode(currentFlow.value.id, n.node_id, n)
+}
+
+// 更新 Webhook 节点的完整 JSON 配置
+const updateRawConfig = (e) => {
+  if (!selectedNodeId.value || !currentFlow.value) return
+  const n = nodes.value.find(x => x.node_id === selectedNodeId.value)
+  if (!n) return
+  
+  n.config = e.target.value
+  updateFlowNode(currentFlow.value.id, n.node_id, n)
 }
 
 const addNode = (type) => {
@@ -824,9 +1205,20 @@ const validateFlow = async () => {
   try {
     const { data } = await apiValidateFlow(currentFlow.value.id)
     if (data.valid) {
-      ElMessage.success('✅ 流程结构验证通过')
+      let msg = '✅ 流程验证通过'
+      if (data.message) msg += `\n${data.message}`
+      if (data.warnings && data.warnings.length > 0) {
+        msg += `\n\n⚠️ 警告:\n${data.warnings.join('\n')}`
+      }
+      ElMessage.success({ message: msg, duration: 5000 })
     } else {
-      ElMessage.error('❌ ' + data.error)
+      let errMsg = '❌ 验证失败'
+      if (data.errors) errMsg += `:\n${data.errors.join('\n')}`
+      else if (data.error) errMsg += `: ${data.error}`
+      if (data.warnings && data.warnings.length > 0) {
+        errMsg += `\n\n⚠️ 警告:\n${data.warnings.join('\n')}`
+      }
+      ElMessage.error({ message: errMsg, duration: 8000 })
     }
   } catch (e) {
     ElMessage.error('❌ 验证失败: ' + (e.response?.data?.error || e.message))
@@ -873,9 +1265,9 @@ const cancelExec = async (id) => {
 // ─── UI 辅助 ───
 
 // 节点执行状态样式
-const statusLabel = (s) => ({ running: '⏳运行中', completed: '✅完成', failed: '❌失败', skipped: '⏭跳过', pending: '⏸等待' }[s] || '')
+const statusLabel = (s) => ({ running: '⏳运行中', completed: '✅完成', failed: '❌失败', skipped: '⏭跳过', pending: '⏸等待', waiting_approval: '⏳等待审批' }[s] || '')
 const nodeStyleByStatus = (type, status) => {
-  const base = { agent: { bg: '#dbeafe', text: '#1e40af' }, condition: { bg: '#fef9c3', text: '#854d0e' }, merge: { bg: '#dcfce7', text: '#166534' }, trigger: { bg: '#f3e8ff', text: '#6b21a8' }, webhook: { bg: '#ffedd5', text: '#9a3412' }, code: { bg: '#f3f4f6', text: '#374151' } }[type] || { bg: '#f1f5f9', text: '#475569' }
+  const base = { agent: { bg: '#dbeafe', text: '#1e40af' }, condition: { bg: '#fef9c3', text: '#854d0e' }, merge: { bg: '#dcfce7', text: '#166534' }, trigger: { bg: '#f3e8ff', text: '#6b21a8' }, webhook: { bg: '#ffedd5', text: '#9a3412' }, code: { bg: '#f3f4f6', text: '#374151' }, sandbox: { bg: '#e0f2fe', text: '#0369a1' }, approval: { bg: '#fee2e2', text: '#dc2626' } }[type] || { bg: '#f1f5f9', text: '#475569' }
   switch (status) {
     case 'running':  return { ...base, border: '#3b82f6', glow: '0 0 12px rgba(59,130,246,0.6), 0 2px 4px rgba(0,0,0,0.1)' }
     case 'completed': return { ...base, border: '#22c55e', glow: '0 0 8px rgba(34,197,94,0.4)' }
@@ -914,13 +1306,13 @@ const stopStatusPolling = () => {
 }
 
 const nodeColor = (type) => {
-  return { agent: '#dbeafe', condition: '#fef9c3', merge: '#dcfce7', trigger: '#f3e8ff', webhook: '#ffedd5', code: '#f3f4f6' }[type] || '#f1f5f9'
+  return { agent: '#dbeafe', condition: '#fef9c3', merge: '#dcfce7', trigger: '#f3e8ff', webhook: '#ffedd5', code: '#f3f4f6', sandbox: '#e0f2fe', approval: '#fee2e2' }[type] || '#f1f5f9'
 }
 const nodeTextColor = (type) => {
-  return { agent: '#1e40af', condition: '#854d0e', merge: '#166534', trigger: '#6b21a8', webhook: '#9a3412', code: '#374151' }[type] || '#475569'
+  return { agent: '#1e40af', condition: '#854d0e', merge: '#166534', trigger: '#6b21a8', webhook: '#9a3412', code: '#374151', sandbox: '#0369a1', approval: '#dc2626' }[type] || '#475569'
 }
 const nodeTypeIcon = (type) => {
-  return { agent: '🤖', condition: '🔀', merge: '🔗', trigger: '⚡', webhook: '🔌', code: '💻' }[type] || '📦'
+  return { agent: '🤖', condition: '🔀', merge: '🔗', trigger: '⚡', webhook: '🔌', code: '💻', sandbox: '🔒', approval: '🛡️' }[type] || '📦'
 }
 
 // 清理可能混入 SVG 代码的节点名称（历史 Bug 修复）
@@ -938,7 +1330,7 @@ const flowStatusClass = (s) => {
 }
 const formatTime = (t) => t ? new Date(t).toLocaleString('zh-CN') : '-'
 const execStatusBadge = (s) => {
-  return { running: 'bg-blue-100 text-blue-700', completed: 'bg-green-100 text-green-700', failed: 'bg-red-100 text-red-700', cancelled: 'bg-gray-200 text-gray-600', waiting: 'bg-yellow-100 text-yellow-700' }[s] || 'bg-gray-100'
+  return { running: 'bg-blue-100 text-blue-700', completed: 'bg-green-100 text-green-700', failed: 'bg-red-100 text-red-700', cancelled: 'bg-gray-200 text-gray-600', waiting: 'bg-yellow-100 text-yellow-700', waiting_approval: 'bg-orange-100 text-orange-700' }[s] || 'bg-gray-100'
 }
 const stepStatusBadge = (s) => {
   return { running: 'bg-blue-100 text-blue-700', completed: 'bg-green-100 text-green-700', failed: 'bg-red-100 text-red-700', skipped: 'bg-gray-200 text-gray-600' }[s] || 'bg-gray-100'
@@ -1077,9 +1469,414 @@ const handleKeyDown = (e) => {
   }
 }
 
+// ─── Prompt 编辑器辅助 ───
+
+// 检测变量
+const hasVariables = (text) => /\$\{[^}]+\}|\{\{[^}]+\}\}/.test(text)
+const extractVariables = (text) => {
+  const matches = text.match(/\$\{([^}]+)\}|\{\{([^}]+)\}\}/g)
+  if (!matches) return []
+  return [...new Set(matches.map(m => m.replace(/[\$\{\}]/g, '')))]
+}
+
+// 模板选择
+const onTemplateSelect = async (e) => {
+  const name = e.target.value
+  if (!name) return
+  const tpl = promptTemplates.value.find(t => t.name === name)
+  if (tpl) {
+    updateNodeField('command', tpl.content)
+    ElMessage.success(`已加载模板: ${name}`)
+  }
+  e.target.value = '' // Reset selector
+}
+
+// 预览替换结果
+const toggleCommandPreview = async () => {
+  if (!selectedNodeId.value) return
+  const n = nodes.value.find(x => x.node_id === selectedNodeId.value)
+  if (!n) return
+  let cfg = {}
+  try { cfg = JSON.parse(n.config || '{}') } catch {}
+  const text = cfg.command || ''
+  if (!text) { ElMessage.warning('命令为空'); return }
+
+  // 构建变量映射
+  const vars = {}
+  // 添加前置节点输出
+  const steps = Object.keys(nodeStatuses.value)
+  for (const sid of steps) {
+    vars[sid] = `(节点 ${sid} 的输出)`
+  }
+  // 添加 Git 变量
+  if (cfg.git_url) vars.repo_url = cfg.git_url
+  if (cfg.git_branch) vars.branch = cfg.git_branch
+
+  try {
+    const { data } = await previewPrompt({ text, variables: vars })
+    previewResolvedText.value = data.resolved
+    showCommandPreview.value = true
+  } catch (e) {
+    // Fallback: 本地替换
+    let resolved = text
+    for (const [k, v] of Object.entries(vars)) {
+      resolved = resolved.replaceAll(`{{${k}}}`, v).replaceAll(`\${${k}}`, v)
+    }
+    previewResolvedText.value = resolved
+    showCommandPreview.value = true
+  }
+}
+
+// 试运行命令
+const trialRunCommand = async () => {
+  if (!selectedNodeId.value) return
+  const n = nodes.value.find(x => x.node_id === selectedNodeId.value)
+  if (!n) return
+  let cfg = {}
+  try { cfg = JSON.parse(n.config || '{}') } catch {}
+  const cmd = cfg.command || ''
+  const sid = cfg.sandbox_id || ''
+  if (!sid) { ElMessage.warning('请先选择 Sandbox'); return }
+  if (!cmd) { ElMessage.warning('命令为空'); return }
+
+  trialRunning.value = true
+  trialOutput.value = '> 正在连接 Sandbox...'
+  try {
+    // 通过 Bridge API 直接执行
+    const sb = agents.value.find(a => a.name === sid)
+    if (!sb) { trialOutput.value = '❌ Sandbox 未找到'; return }
+    
+    const res = await api.post(`/terminals/${sb.id}/execute`, { command: cmd, timeout: 30 })
+    trialOutput.value = res.data.output || '(无输出)'
+    ElMessage.success('试运行完成')
+  } catch (e) {
+    trialOutput.value = `❌ 执行失败: ${e.response?.data?.error || e.message}`
+  } finally {
+    trialRunning.value = false
+  }
+}
+
+// ─── Dialog 状态 ───
+const webhookDialogVisible = ref(false)
+const webhookActiveTab = ref('headers')
+const tempWebhookUrl = ref('')
+const tempHeadersJson = ref('')
+const tempBodyJson = ref('')
+const jsonErrors = ref({ headers: '', body: '' })
+const headersTextarea = ref(null)
+const bodyTextarea = ref(null)
+
+const commandDialogVisible = ref(false)
+const tempCommand = ref('')
+const commandPreview = ref('')
+const commandTextarea = ref(null)
+
+const approvalDialogVisible = ref(false)
+const tempApprovalBody = ref('')
+const approvalTextarea = ref(null)
+
+// Agent 状态
+const agentDialogVisible = ref(false)
+const tempAgentRole = ref('')
+const tempAgentInstruction = ref('')
+const tempAgentConstraints = ref('')
+const tempAgentFormat = ref('')
+const agentPreviewText = ref('')
+const agentTemplateMatch = ref('')
+const agentTextarea = ref(null)
+
+// 可用变量列表
+const availableVariables = computed(() => {
+  if (!selectedNodeId.value) return []
+  // 获取前置节点
+  const predecessors = []
+  edges.value.forEach(e => {
+    if (e.target_id === selectedNodeId.value) predecessors.push(e.source_id)
+  })
+  
+  const vars = predecessors.map(id => `\${${id}}`)
+  // 添加通用变量
+  vars.push('{{repo_url}}', '{{branch}}', '{{node_output}}')
+  return vars
+})
+
+// ─── Webhook 编辑器逻辑 ───
+const webhookSummary = computed(() => {
+  if (!selectedNodeId.value) return { headers: '-', body: '-' }
+  const n = nodes.value.find(x => x.node_id === selectedNodeId.value)
+  if (!n) return { headers: '-', body: '-' }
+  let cfg = {}
+  try { cfg = JSON.parse(n.config || '{}') } catch {}
+  
+  let hCount = 0, bType = '空'
+  try {
+    const h = typeof cfg.headers === 'string' ? JSON.parse(cfg.headers) : cfg.headers
+    hCount = Object.keys(h || {}).length
+  } catch {}
+  try {
+    const b = typeof cfg.body === 'string' ? JSON.parse(cfg.body) : cfg.body
+    bType = b ? 'JSON' : '空'
+  } catch { bType = '格式错误' }
+  
+  return { headers: `${hCount} 字段`, body: bType }
+})
+
+// ─── Agent 节点逻辑 ───
+const agentSummary = computed(() => {
+  if (!selectedNodeId.value) return { role: '', instruction: '', constraints: '', format: '' }
+  const n = nodes.value.find(x => x.node_id === selectedNodeId.value)
+  if (!n) return { role: '', instruction: '', constraints: '', format: '' }
+  let cfg = {}
+  try { cfg = JSON.parse(n.config || '{}') } catch {}
+  
+  const prompt = cfg.prompt || ''
+  // 简单解析 Markdown Header 格式
+  const roleMatch = prompt.match(/# Role\n([\s\S]*?)(?=\n# |$)/i)
+  const instrMatch = prompt.match(/# (?:Instruction|Task)\n([\s\S]*?)(?=\n# |$)/i)
+  const constrMatch = prompt.match(/# (?:Constraints|Rules)\n([\s\S]*?)(?=\n# |$)/i)
+  const formatMatch = prompt.match(/# (?:Output|Format)\n([\s\S]*?)(?=\n# |$)/i)
+  
+  return {
+    role: roleMatch ? roleMatch[1].trim() : '',
+    instruction: instrMatch ? instrMatch[1].trim() : (roleMatch ? '' : prompt), // 如果没有 headers，全放在 instruction
+    constraints: constrMatch ? constrMatch[1].trim() : '',
+    format: formatMatch ? formatMatch[1].trim() : ''
+  }
+})
+
+const openWebhookEditor = (tab) => {
+  if (!selectedNodeId.value) return
+  const n = nodes.value.find(x => x.node_id === selectedNodeId.value)
+  if (!n) return
+  let cfg = {}
+  try { cfg = JSON.parse(n.config || '{}') } catch {}
+  
+  tempWebhookUrl.value = cfg.url || ''
+  try {
+    const h = typeof cfg.headers === 'string' ? JSON.parse(cfg.headers) : cfg.headers
+    tempHeadersJson.value = JSON.stringify(h || {}, null, 2)
+  } catch { tempHeadersJson.value = cfg.headers || '{}' }
+  
+  try {
+    const b = typeof cfg.body === 'string' ? JSON.parse(cfg.body) : cfg.body
+    tempBodyJson.value = JSON.stringify(b || {}, null, 2)
+  } catch { tempBodyJson.value = cfg.body || '{}' }
+  
+  jsonErrors.value = { headers: '', body: '' }
+  webhookActiveTab.value = tab || 'headers'
+  webhookDialogVisible.value = true
+}
+
+const validateJson = (field) => {
+  const val = field === 'headers' ? tempHeadersJson.value : tempBodyJson.value
+  try {
+    JSON.parse(val)
+    jsonErrors.value[field] = ''
+  } catch (e) {
+    jsonErrors.value[field] = e.message
+  }
+}
+
+const formatJson = (field) => {
+  try {
+    const val = field === 'headers' ? tempHeadersJson.value : tempBodyJson.value
+    const parsed = JSON.parse(val)
+    const formatted = JSON.stringify(parsed, null, 2)
+    if (field === 'headers') tempHeadersJson.value = formatted
+    else tempBodyJson.value = formatted
+    jsonErrors.value[field] = ''
+  } catch (e) {
+    jsonErrors.value[field] = e.message
+  }
+}
+
+const insertVar = (target, variable) => {
+  const textarea = target === 'headers' ? headersTextarea.value 
+               : target === 'body' ? bodyTextarea.value
+               : target === 'command' ? commandTextarea.value
+               : target === 'agent_instruction' ? agentTextarea.value
+               : approvalTextarea.value
+  
+  if (textarea) {
+    const start = textarea.selectionStart
+    const end = textarea.selectionEnd
+    const text = target === 'headers' ? tempHeadersJson.value 
+               : target === 'body' ? tempBodyJson.value
+               : target === 'command' ? tempCommand.value
+               : target === 'agent_instruction' ? tempAgentInstruction.value
+               : tempApprovalBody.value
+    
+    const before = text.substring(0, start)
+    const after = text.substring(end)
+    const newText = before + variable + after
+    
+    if (target === 'headers') tempHeadersJson.value = newText
+    else if (target === 'body') tempBodyJson.value = newText
+    else if (target === 'command') tempCommand.value = newText
+    else if (target === 'agent_instruction') tempAgentInstruction.value = newText
+    else tempApprovalBody.value = newText
+    
+    setTimeout(() => {
+      textarea.focus()
+      textarea.setSelectionRange(start + variable.length, start + variable.length)
+    }, 10)
+  }
+}
+
+const saveWebhookConfig = () => {
+  if (jsonErrors.value.headers || jsonErrors.value.body) {
+    ElMessage.warning('请修复 JSON 格式错误后再保存')
+    return
+  }
+  
+  updateNodeField('url', tempWebhookUrl.value)
+  
+  // 保存 Headers
+  try {
+    const h = JSON.parse(tempHeadersJson.value)
+    updateNodeField('headers', JSON.stringify(h))
+  } catch {}
+  
+  // 保存 Body
+  try {
+    const b = JSON.parse(tempBodyJson.value)
+    updateNodeField('body', JSON.stringify(b))
+  } catch {}
+  
+  webhookDialogVisible.value = false
+  ElMessage.success('Webhook 配置已保存')
+}
+
+// ─── Sandbox 命令编辑器逻辑 ───
+const openCommandEditor = () => {
+  if (!selectedNodeId.value) return
+  const n = nodes.value.find(x => x.node_id === selectedNodeId.value)
+  if (!n) return
+  let cfg = {}
+  try { cfg = JSON.parse(n.config || '{}') } catch {}
+  
+  tempCommand.value = cfg.command || ''
+  checkCommandVariables()
+  commandDialogVisible.value = true
+}
+
+const onTemplateSelectFromDialog = (e) => {
+  const name = e.target.value
+  if (!name) return
+  const tpl = promptTemplates.value.find(t => t.name === name)
+  if (tpl) {
+    tempCommand.value = tpl.content
+    checkCommandVariables()
+    ElMessage.success(`已加载模板: ${name}`)
+  }
+  e.target.value = ''
+}
+
+const checkCommandVariables = () => {
+  const vars = {}
+  // 模拟替换
+  availableVariables.value.forEach(v => {
+    const key = v.replace(/[\$\{\}]/g, '')
+    vars[key] = `(变量 ${key})`
+  })
+  vars['repo_url'] = 'git@github.com:test/repo'
+  vars['branch'] = 'main'
+  
+  let resolved = tempCommand.value
+  for (const [k, v] of Object.entries(vars)) {
+    resolved = resolved.replaceAll(`{{${k}}}`, v).replaceAll(`\${${k}}`, v)
+  }
+  commandPreview.value = resolved
+}
+
+const saveCommandConfig = () => {
+  updateNodeField('command', tempCommand.value)
+  commandDialogVisible.value = false
+  ElMessage.success('命令已保存')
+}
+
+// ─── Approval 编辑器逻辑 ───
+const openApprovalEditor = () => {
+  if (!selectedNodeId.value) return
+  const n = nodes.value.find(x => x.node_id === selectedNodeId.value)
+  if (!n) return
+  let cfg = {}
+  try { cfg = JSON.parse(n.config || '{}') } catch {}
+  
+  tempApprovalBody.value = cfg.card_body || ''
+  approvalDialogVisible.value = true
+}
+
+const saveApprovalConfig = () => {
+  updateNodeField('card_body', tempApprovalBody.value)
+  approvalDialogVisible.value = false
+  ElMessage.success('卡片内容已保存')
+}
+
+// ─── Agent 编辑器逻辑 ───
+const openAgentEditor = () => {
+  if (!selectedNodeId.value) return
+  const n = nodes.value.find(x => x.node_id === selectedNodeId.value)
+  if (!n) return
+  let cfg = {}
+  try { cfg = JSON.parse(n.config || '{}') } catch {}
+  
+  const prompt = cfg.prompt || ''
+  // 解析逻辑同 agentSummary
+  const roleMatch = prompt.match(/# Role\n([\s\S]*?)(?=\n# |$)/i)
+  const instrMatch = prompt.match(/# (?:Instruction|Task)\n([\s\S]*?)(?=\n# |$)/i)
+  const constrMatch = prompt.match(/# (?:Constraints|Rules)\n([\s\S]*?)(?=\n# |$)/i)
+  const formatMatch = prompt.match(/# (?:Output|Format)\n([\s\S]*?)(?=\n# |$)/i)
+  
+  if (roleMatch) {
+     tempAgentRole.value = roleMatch[1].trim()
+     tempAgentInstruction.value = instrMatch ? instrMatch[1].trim() : ''
+     tempAgentConstraints.value = constrMatch ? constrMatch[1].trim() : ''
+     tempAgentFormat.value = formatMatch ? formatMatch[1].trim() : ''
+  } else {
+     // 旧格式，没有 headers，全部放进 Instruction
+     tempAgentInstruction.value = prompt
+     tempAgentRole.value = ''
+     tempAgentConstraints.value = ''
+     tempAgentFormat.value = ''
+  }
+  
+  updateAgentPreview()
+  agentDialogVisible.value = true
+}
+
+const updateAgentPreview = () => {
+  // 自动拼接为结构化 Markdown
+  let md = ''
+  if (tempAgentRole.value.trim()) md += `# Role\n${tempAgentRole.value.trim()}\n\n`
+  if (tempAgentInstruction.value.trim()) md += `# Instruction\n${tempAgentInstruction.value.trim()}\n\n`
+  if (tempAgentConstraints.value.trim()) md += `# Constraints\n${tempAgentConstraints.value.trim()}\n\n`
+  if (tempAgentFormat.value.trim()) md += `# Output Format\n${tempAgentFormat.value.trim()}\n\n`
+  
+  agentPreviewText.value = md
+}
+
+const formatAgentPreview = () => {
+  // 简单的格式化，比如去掉多余空行
+  agentPreviewText.value = agentPreviewText.value.replace(/\n{3,}/g, '\n\n').trim()
+}
+
+const saveAgentConfig = () => {
+  updateNodeField('prompt', agentPreviewText.value.trim())
+  agentDialogVisible.value = false
+  ElMessage.success('Prompt 已保存')
+}
+
+// 更新 insertVar 逻辑
+
+const renderedMarkdown = computed(() => {
+  if (!tempApprovalBody.value) return '<div class="text-gray-400 italic">暂无内容...</div>'
+  return marked.parse(tempApprovalBody.value)
+})
+
 
 onMounted(() => { 
-  loadFlows(); loadAgents()
+  loadFlows(); loadAgents(); loadPromptTemplates()
   window.addEventListener('keydown', handleKeyDown)
   window.addEventListener('click', handleGlobalClick)
 })

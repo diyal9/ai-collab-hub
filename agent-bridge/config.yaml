@@ -1,0 +1,12 @@
+# Agent Bridge Configuration
+server:
+  host: "0.0.0.0"
+  port: 8088  # Changed from 8087 to avoid conflict with Hub
+
+hub:
+  url: "ws://127.0.0.1:8087/ws/agent"
+  agent_id: "local-bridge-01"
+  api_token: ""
+
+log:
+  level: "info"

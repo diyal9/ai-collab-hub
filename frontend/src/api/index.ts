@@ -73,3 +73,9 @@ export const getFlowExecutions = (id: string) => api.get(`/flows/${id}/execution
 export const getExecutionSteps = (id: string) => api.get(`/flow-executions/${id}/steps`)
 export const cancelExecution = (id: string) => api.post(`/flow-executions/${id}/cancel`)
 export const validateFlow = (id: string) => api.post(`/flows/${id}/validate`)
+
+// Prompt 模板管理
+export const getPromptTemplates = () => api.get('/prompt-templates')
+export const createPromptTemplate = (data: any) => api.post('/prompt-templates', data)
+export const deletePromptTemplate = (id: number) => api.delete(`/prompt-templates/${id}`)
+export const previewPrompt = (data: { text: string; variables: Record<string, string> }) => api.post('/prompt-templates/preview', data)

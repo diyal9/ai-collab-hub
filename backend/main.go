@@ -6,6 +6,7 @@ import (
 	"ai-collab-hub/internal/db"
 	"ai-collab-hub/internal/engine"
 	"ai-collab-hub/internal/gateway"
+	"ai-collab-hub/internal/llm"
 	"ai-collab-hub/internal/model"
 	"ai-collab-hub/internal/ws"
 	"encoding/json"
@@ -24,6 +25,24 @@ import (
 )
 
 var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+
+// extractNodeRefs 从字符串中提取 ${node_xxx} 引用
+func extractNodeRefs(s string) []string {
+	var refs []string
+	for i := 0; i < len(s); i++ {
+		if i+1 < len(s) && s[i] == '$' && s[i+1] == '{' {
+			start := i + 2
+			for j := start; j < len(s); j++ {
+				if s[j] == '}' {
+					refs = append(refs, s[start:j])
+					i = j
+					break
+				}
+			}
+		}
+	}
+	return refs
+}
 
 // ─── 远程终端 WebSocket 代理 ───
 
@@ -129,6 +148,9 @@ func main() {
 	engine.AutoMigrateFlowRuntime()
 	engine.AutoMigrateGitWebhook()
 
+	// Init LLM provider status (after DB is ready)
+	llm.Init()
+
 	// Init admin if not exists
 	var admin model.User
 	if err := db.DB.Where("username = ?", "admin").First(&admin).Error; err != nil {
@@ -183,6 +205,30 @@ func main() {
 	// ═══════════════════════════════════════════
 	// Git Webhook (GitHub/GitLab push events)
 	// ═══════════════════════════════════════════
+
+	// ═══════════════════════════════════════════
+	// 审批回调公开端点（飞书卡片按钮 → 浏览器 → GET 回调）
+	// ═══════════════════════════════════════════
+	r.GET("/approval/:execID/approve", func(c *gin.Context) {
+		execID, _ := parseUint(c.Param("execID"))
+		err := engine.ResumeFlowExecution(execID)
+		if err != nil {
+			c.Data(200, "text/html; charset=utf-8", []byte(fmt.Sprintf("<h1>❌ 审批失败</h1><p>%s</p><p><a href='/hermesshare'>返回</a></p>", err.Error())))
+			return
+		}
+		c.Data(200, "text/html; charset=utf-8", []byte("<h1>✅ 已批准</h1><p>流程已恢复执行。</p><p><a href='/hermesshare'>返回</a></p>"))
+	})
+
+	r.GET("/approval/:execID/reject", func(c *gin.Context) {
+		execID, _ := parseUint(c.Param("execID"))
+		err := engine.AbortFlowExecution(execID)
+		if err != nil {
+			c.Data(200, "text/html; charset=utf-8", []byte(fmt.Sprintf("<h1>❌ 操作失败</h1><p>%s</p><p><a href='/hermesshare'>返回</a></p>", err.Error())))
+			return
+		}
+		c.Data(200, "text/html; charset=utf-8", []byte("<h1>❌ 已拒绝</h1><p>流程已终止。</p><p><a href='/hermesshare'>返回</a></p>"))
+	})
+
 	r.POST("/api/webhook/git", func(c *gin.Context) {
 		// 验证 Secret（可选）
 		secret := config.Cfg.Webhook.Secret
@@ -631,7 +677,86 @@ func main() {
 			c.JSON(200, gin.H{"ok": true})
 		})
 
-		// 验证 Flow（检查环、孤立节点等）
+		// ─── 审批回调 (人在回路) ───
+		authGroup.POST("/flow-executions/:id/approve", func(c *gin.Context) {
+			execID, _ := parseUint(c.Param("id"))
+			if err := engine.ResumeFlowExecution(execID); err != nil {
+				c.JSON(400, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(200, gin.H{"ok": true, "message": "Flow resumed"})
+		})
+
+		authGroup.POST("/flow-executions/:id/reject", func(c *gin.Context) {
+			execID, _ := parseUint(c.Param("id"))
+			if err := engine.AbortFlowExecution(execID); err != nil {
+				c.JSON(400, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(200, gin.H{"ok": true, "message": "Flow aborted"})
+		})
+
+		// ─── Prompt 模板管理 ───
+		authGroup.GET("/prompt-templates", func(c *gin.Context) {
+			templates := engine.GetPromptTemplates()
+			c.JSON(200, templates)
+		})
+
+		authGroup.POST("/prompt-templates", func(c *gin.Context) {
+			var tmpl model.PromptTemplate
+			if err := c.BindJSON(&tmpl); err != nil {
+				c.JSON(400, gin.H{"error": "invalid request"})
+				return
+			}
+			tmpl.CreatedAt = time.Now()
+			tmpl.UpdatedAt = time.Now()
+			if err := engine.SavePromptTemplate(&tmpl); err != nil {
+				c.JSON(500, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(200, tmpl)
+		})
+
+		authGroup.DELETE("/prompt-templates/:id", func(c *gin.Context) {
+			id, _ := parseUint(c.Param("id"))
+			if err := engine.DeletePromptTemplate(id); err != nil {
+				c.JSON(500, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(200, gin.H{"ok": true})
+		})
+
+		// ─── Prompt 变量预览（替换变量，不执行）───
+		authGroup.POST("/prompt-templates/preview", func(c *gin.Context) {
+			var req struct {
+				Text      string            `json:"text"`
+				Variables map[string]string `json:"variables"`
+			}
+			if err := c.BindJSON(&req); err != nil {
+				c.JSON(400, gin.H{"error": "invalid request"})
+				return
+			}
+			// 加载流程变量（repo_url, branch 等）
+			vars := req.Variables
+			if vars == nil {
+				vars = make(map[string]string)
+			}
+			// 自动注入流程级变量
+			if _, ok := vars["repo_url"]; !ok { vars["repo_url"] = "(未配置)" }
+			if _, ok := vars["branch"]; !ok { vars["branch"] = "(未配置)" }
+			
+			resolved := req.Text
+			for k, v := range vars {
+				resolved = strings.ReplaceAll(resolved, "{{"+k+"}}", v)
+			}
+			// 也处理 ${node_xxx} 语法
+			for k, v := range vars {
+				resolved = strings.ReplaceAll(resolved, "${"+k+"}", v)
+			}
+			c.JSON(200, gin.H{"resolved": resolved})
+		})
+
+		// 验证 Flow（检查环、孤立节点、配置完整性等）
 		authGroup.POST("/flows/:id/validate", func(c *gin.Context) {
 			flowID, _ := parseUint(c.Param("id"))
 			var flow model.AgentFlow
@@ -639,12 +764,87 @@ func main() {
 				c.JSON(404, gin.H{"error": "flow not found"})
 				return
 			}
-			_, err := engine.BuildAndValidateDAG(flow)
+			graph, err := engine.BuildAndValidateDAG(flow)
 			if err != nil {
 				c.JSON(400, gin.H{"valid": false, "error": err.Error()})
-			} else {
-				c.JSON(200, gin.H{"valid": true, "message": "Flow structure is valid"})
+				return
 			}
+
+			// 深度验证：检查节点配置
+			var warnings []string
+			var errors []string
+
+			// 获取在线 Sandbox 列表
+			var onlineSandboxes []model.AgentTerminal
+			db.DB.Where("status = ?", "connected").Find(&onlineSandboxes)
+			onlineSandboxIDs := make(map[string]bool)
+			for _, s := range onlineSandboxes {
+				onlineSandboxIDs[s.Name] = true
+			}
+
+			for nodeID, node := range graph {
+				cfg := node.Config
+				// Sandbox 节点验证
+				if node.NodeType == "sandbox" {
+					sid, _ := cfg["sandbox_id"].(string)
+					if sid == "" {
+						errors = append(errors, fmt.Sprintf("节点 %s (%s): sandbox_id 未配置", nodeID, node.Name))
+					} else if !onlineSandboxIDs[sid] {
+						warnings = append(warnings, fmt.Sprintf("节点 %s (%s): Sandbox '%s' 当前不在线", nodeID, node.Name, sid))
+					}
+					cmd, _ := cfg["command"].(string)
+					if cmd == "" {
+						warnings = append(warnings, fmt.Sprintf("节点 %s (%s): command 为空", nodeID, node.Name))
+					}
+					// Git URL 格式检查
+					if gitURL, ok := cfg["git_url"].(string); ok && gitURL != "" {
+						if !strings.HasPrefix(gitURL, "git@") && !strings.HasPrefix(gitURL, "https://") {
+							warnings = append(warnings, fmt.Sprintf("节点 %s (%s): git_url 格式可疑", nodeID, node.Name))
+						}
+					}
+				}
+				// Webhook 节点验证
+				if node.NodeType == "webhook" {
+					rawCfg, _ := cfg["headers"].(string)
+					if rawCfg != "" {
+						var tmp map[string]interface{}
+						if err := json.Unmarshal([]byte(rawCfg), &tmp); err != nil {
+							// 尝试检查是否是转义的 JSON 字符串
+							var escaped string
+							if err2 := json.Unmarshal([]byte(rawCfg), &escaped); err2 == nil {
+								if err3 := json.Unmarshal([]byte(escaped), &tmp); err3 != nil {
+									errors = append(errors, fmt.Sprintf("节点 %s (%s): headers JSON 格式无效", nodeID, node.Name))
+								}
+							} else {
+								errors = append(errors, fmt.Sprintf("节点 %s (%s): headers JSON 格式无效", nodeID, node.Name))
+							}
+						}
+					}
+				}
+				// 检查节点引用 ${node_xxx}
+				for _, val := range cfg {
+					if s, ok := val.(string); ok && strings.Contains(s, "${") && strings.Contains(s, "}") {
+						// 简单检查引用的节点是否存在
+						for _, ref := range extractNodeRefs(s) {
+							if _, exists := graph[ref]; !exists {
+								warnings = append(warnings, fmt.Sprintf("节点 %s (%s): 引用了不存在的节点 ${%s}", nodeID, node.Name, ref))
+							}
+						}
+					}
+				}
+			}
+
+			resp := gin.H{"valid": len(errors) == 0}
+			if len(errors) > 0 {
+				resp["errors"] = errors
+			}
+			if len(warnings) > 0 {
+				resp["warnings"] = warnings
+			}
+			if len(errors) == 0 && len(warnings) == 0 {
+				resp["message"] = "Flow 配置验证通过"
+			}
+			c.JSON(200, resp)
 		})
 
 		// ─── Webhook 仓库映射管理 ───
@@ -879,52 +1079,7 @@ func main() {
 			c.JSON(200, gin.H{"token": newToken})
 		})
 
-		// 下发任务给 Agent
-		authGroup.POST("/agent-tasks", func(c *gin.Context) {
-			var req struct {
-				AgentID        uint   `json:"agent_id"`
-				Title          string `json:"title"`
-				Prompt         string `json:"prompt"`
-				Priority       int    `json:"priority"`
-				RequiredSkills string `json:"required_skills"`   // JSON array: ["coding", "git"]
-				ParentTaskID   string `json:"parent_task_id"`    // 父任务 ID
-				ContextSnapshot string `json:"context_snapshot"` // 额外上下文
-				TimeoutMinutes int    `json:"timeout_minutes"`   // 超时分钟数 (默认30)
-			}
-			c.BindJSON(&req)
-
-			if req.Title == "" || req.Prompt == "" {
-				c.JSON(400, gin.H{"error": "title and prompt required"})
-				return
-			}
-			if req.TimeoutMinutes <= 0 {
-				req.TimeoutMinutes = 30
-			}
-
-			task := model.AgentTask{
-				ID:              fmt.Sprintf("task_%d", time.Now().UnixNano()),
-				AgentID:         req.AgentID,
-				Title:           req.Title,
-				Prompt:          req.Prompt,
-				Status:          "queued",
-				Priority:        req.Priority,
-				RequiredSkills:  req.RequiredSkills,
-				ParentTaskID:    req.ParentTaskID,
-				ContextSnapshot: req.ContextSnapshot,
-				TimeoutMinutes:  req.TimeoutMinutes,
-			}
-			db.DB.Create(&task)
-
-			// 如果指定了 Agent ID，尝试立即分发给该 Agent
-			if req.AgentID > 0 {
-				gateway.Gateway.DispatchToSpecificAgent(req.AgentID)
-			} else {
-				// 否则尝试能力匹配自动分发
-				gateway.Gateway.DispatchByCapabilityMatching()
-			}
-
-			c.JSON(200, task)
-		})
+		// 下发任务给 Agent → 已迁移至 v2 扩展版本 (见下方 "/agent-tasks" 扩展)
 
 		// 任务列表
 		authGroup.GET("/agent-tasks", func(c *gin.Context) {
@@ -1074,6 +1229,353 @@ func main() {
 			gateway.Gateway.ReplyToApproval(id, req.Reply, req.Approved)
 			c.JSON(200, gin.H{"ok": true})
 		})
+
+		// ═══════════════════════════════════════════
+		// 6. LLM Provider 路由
+		// ═══════════════════════════════════════════
+
+		// Hub 直接调用 LLM
+		authGroup.POST("/llm/chat", func(c *gin.Context) {
+			var req llm.ChatRequest
+			if err := c.BindJSON(&req); err != nil {
+				c.JSON(400, gin.H{"error": "invalid request"})
+				return
+			}
+			if req.Model == "" {
+				c.JSON(400, gin.H{"error": "model required"})
+				return
+			}
+
+			resp, err := llm.Chat(req)
+			if err != nil {
+				c.JSON(500, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(200, resp)
+		})
+
+		// LLM Provider 列表
+		authGroup.GET("/llm/providers", func(c *gin.Context) {
+			c.JSON(200, llm.ListProviders())
+		})
+
+		// 添加/更新 Provider 配置
+		authGroup.POST("/llm/providers", func(c *gin.Context) {
+			var req struct {
+				ID           uint   `json:"id"`
+				Name         string `json:"name"`
+				BaseURL      string `json:"base_url"`
+				APIKey       string `json:"api_key"`
+				DefaultModel string `json:"default_model"`
+				MaxTokens    int    `json:"max_tokens"`
+				Timeout      int    `json:"timeout"`
+				Enabled      bool   `json:"enabled"`
+			}
+			c.BindJSON(&req)
+
+			if req.Name == "" {
+				c.JSON(400, gin.H{"error": "name required"})
+				return
+			}
+
+			cfg := model.LLMProviderConfig{
+				Name:         req.Name,
+				BaseURL:      req.BaseURL,
+				APIKey:       req.APIKey,
+				DefaultModel: req.DefaultModel,
+				MaxTokens:    req.MaxTokens,
+				Timeout:      req.Timeout,
+				Enabled:      req.Enabled,
+			}
+
+			if req.ID > 0 {
+				// 更新
+				cfg.ID = req.ID
+				cfg.UpdatedAt = time.Now()
+				db.DB.Save(&cfg)
+			} else {
+				// 新建 (按 name 去重)
+				var existing model.LLMProviderConfig
+				if db.DB.Where("name = ?", req.Name).First(&existing).Error == nil {
+					db.DB.Model(&existing).Updates(map[string]interface{}{
+						"base_url":      req.BaseURL,
+						"api_key":       req.APIKey,
+						"default_model": req.DefaultModel,
+						"max_tokens":    req.MaxTokens,
+						"timeout":       req.Timeout,
+						"enabled":       req.Enabled,
+						"updated_at":    time.Now(),
+					})
+					cfg = existing
+				} else {
+					db.DB.Create(&cfg)
+				}
+			}
+
+			c.JSON(200, gin.H{
+				"id":           cfg.ID,
+				"name":         cfg.Name,
+				"base_url":     cfg.BaseURL,
+				"default_model": cfg.DefaultModel,
+				"max_tokens":   cfg.MaxTokens,
+				"timeout":      cfg.Timeout,
+				"enabled":      cfg.Enabled,
+			})
+		})
+
+		// ═══════════════════════════════════════════
+		// 7. 扩展 Agent 任务 API (v2)
+		// ═══════════════════════════════════════════
+
+		// 获取单个任务详情 (含 result, progress, executor)
+		authGroup.GET("/agent-tasks/:id", func(c *gin.Context) {
+			var task model.AgentTask
+			if err := db.DB.Where("id = ?", c.Param("id")).First(&task).Error; err != nil {
+				c.JSON(404, gin.H{"error": "task not found"})
+				return
+			}
+			c.JSON(200, task)
+		})
+
+		// 向运行中的任务发送输入 (多轮对话)
+		authGroup.POST("/agent-tasks/:id/input", func(c *gin.Context) {
+			var req struct {
+				Content string `json:"content"`
+			}
+			c.BindJSON(&req)
+
+			if req.Content == "" {
+				c.JSON(400, gin.H{"error": "content required"})
+				return
+			}
+
+			taskID := c.Param("id")
+			if err := gateway.Gateway.HandleTaskInput(taskID, req.Content); err != nil {
+				c.JSON(500, gin.H{"error": err.Error()})
+				return
+			}
+
+			c.JSON(200, gin.H{"ok": true, "task_id": taskID})
+		})
+
+		// 扩展 Agent 任务创建 (支持 v2 字段)
+		authGroup.POST("/agent-tasks", func(c *gin.Context) {
+			var req struct {
+				AgentID         uint   `json:"agent_id"`
+				Title           string `json:"title"`
+				Prompt          string `json:"prompt"`
+				Priority        int    `json:"priority"`
+				RequiredSkills  string `json:"required_skills"`
+				ParentTaskID    string `json:"parent_task_id"`
+				ContextSnapshot string `json:"context_snapshot"`
+				TimeoutMinutes  int    `json:"timeout_minutes"`
+				// v2 字段
+				Executor        string `json:"executor"`
+				ExecutorConfig  string `json:"executor_config"`
+				ConversationMode bool   `json:"conversation_mode"`
+				Steps           string `json:"steps"`
+			}
+			c.BindJSON(&req)
+
+			// v2: 支持 prompt 或 steps 任一方式
+			if req.Title == "" {
+				c.JSON(400, gin.H{"error": "title required"})
+				return
+			}
+			if req.Prompt == "" && req.Steps == "" {
+				c.JSON(400, gin.H{"error": "prompt or steps required"})
+				return
+			}
+			if req.TimeoutMinutes <= 0 {
+				req.TimeoutMinutes = 30
+			}
+
+			task := model.AgentTask{
+				ID:               fmt.Sprintf("task_%d", time.Now().UnixNano()),
+				AgentID:          req.AgentID,
+				Title:            req.Title,
+				Prompt:           req.Prompt,
+				Status:           "queued",
+				Priority:         req.Priority,
+				RequiredSkills:   req.RequiredSkills,
+				ParentTaskID:     req.ParentTaskID,
+				ContextSnapshot:  req.ContextSnapshot,
+				TimeoutMinutes:   req.TimeoutMinutes,
+				Executor:         req.Executor,
+				ExecutorConfig:   req.ExecutorConfig,
+				ConversationMode: req.ConversationMode,
+				Steps:            req.Steps,
+			}
+			db.DB.Create(&task)
+
+			// 如果指定了 Agent ID，尝试立即分发给该 Agent
+			if req.AgentID > 0 {
+				gateway.Gateway.DispatchToSpecificAgent(req.AgentID)
+			} else {
+				gateway.Gateway.DispatchByCapabilityMatching()
+			}
+
+			c.JSON(200, task)
+		})
+
+		// ═══════════════════════════════════════════
+		// Agent 对话 API (扩展)
+		// ═══════════════════════════════════════════
+
+		// 创建对话任务 (v2: 使用 conversation_mode 字段)
+		authGroup.POST("/agent-conversations", func(c *gin.Context) {
+			var req struct {
+				AgentID        uint   `json:"agent_id"`
+				Title          string `json:"title"`
+				Prompt         string `json:"prompt"`
+				Executor       string `json:"executor"`
+				ExecutorConfig string `json:"executor_config"`
+			}
+			c.BindJSON(&req)
+
+			if req.AgentID == 0 {
+				c.JSON(400, gin.H{"error": "agent_id required"})
+				return
+			}
+
+			taskID := fmt.Sprintf("conv_%d", time.Now().UnixNano())
+			prompt := req.Prompt
+			if prompt == "" {
+				prompt = "[CONVERSATION_MODE] Multi-turn conversation with user"
+			}
+
+			task := model.AgentTask{
+				ID:               taskID,
+				AgentID:          req.AgentID,
+				Title:            req.Title,
+				Prompt:           prompt,
+				Status:           "running",
+				Priority:         1,
+				RequiredSkills:   `["terminal","file","web","code-execution"]`,
+				TimeoutMinutes:   120,
+				StartedAt:        time.Now(),
+				TimeoutAt:        time.Now().Add(120 * time.Minute),
+				ConversationMode: true,
+				Executor:         req.Executor,
+				ExecutorConfig:   req.ExecutorConfig,
+			}
+			db.DB.Create(&task)
+
+			// 标记 Agent 为 busy
+			db.DB.Model(&model.AgentInstance{}).Where("id = ?", req.AgentID).Updates(map[string]interface{}{
+				"status":          "busy",
+				"current_task_id": taskID,
+			})
+
+			// 构建 v2 task.start payload
+			startPayload := map[string]interface{}{
+				"task_id":           taskID,
+				"title":             req.Title,
+				"prompt":            task.Prompt,
+				"conversation_mode": true,
+			}
+			if task.Executor != "" {
+				startPayload["executor"] = task.Executor
+				startPayload["config"] = llm.ParseExecutorConfig(task.ExecutorConfig)
+			}
+
+			gateway.Gateway.SendToAgent(req.AgentID, gateway.WSMessage{
+				Method:  "task.start",
+				Payload: startPayload,
+			})
+
+			c.JSON(200, task)
+		})
+
+		// 获取对话列表 (使用 conversation_mode 字段过滤)
+		authGroup.GET("/agent-conversations", func(c *gin.Context) {
+			var tasks []model.AgentTask
+			db.DB.Where("conversation_mode = ?", true).
+				Order("created_at desc").
+				Limit(50).
+				Find(&tasks)
+
+			// 附加 Agent 信息
+			type ConvWithAgent struct {
+				model.AgentTask
+				AgentName string `json:"agent_name"`
+				AgentType string `json:"agent_type"`
+			}
+			var result []ConvWithAgent
+			for _, t := range tasks {
+				var agent model.AgentInstance
+				db.DB.First(&agent, t.AgentID)
+				result = append(result, ConvWithAgent{
+					AgentTask: t,
+					AgentName: agent.Name,
+					AgentType: agent.Type,
+				})
+			}
+			c.JSON(200, result)
+		})
+
+		// 发送消息到对话
+		authGroup.POST("/agent-conversations/:id/messages", func(c *gin.Context) {
+			var req struct {
+				Content string `json:"content"`
+			}
+			c.BindJSON(&req)
+
+			taskID := c.Param("id")
+			if req.Content == "" {
+				c.JSON(400, gin.H{"error": "content required"})
+				return
+			}
+
+			// 验证是对话任务
+			var task model.AgentTask
+			if err := db.DB.Where("id = ?", taskID).First(&task).Error; err != nil {
+				c.JSON(404, gin.H{"error": "conversation not found"})
+				return
+			}
+
+			// 添加用户消息日志
+			db.DB.Create(&model.AgentTaskLog{
+				TaskID:  taskID,
+				Type:    "user_input",
+				Content: req.Content,
+			})
+
+			// 转发给 Agent
+			gateway.Gateway.SendToAgent(task.AgentID, gateway.WSMessage{
+				Method: "task.input",
+				Payload: map[string]interface{}{
+					"task_id": taskID,
+					"content": req.Content,
+				},
+			})
+
+			c.JSON(200, gin.H{"ok": true})
+		})
+
+		// 获取对话消息历史
+		authGroup.GET("/agent-conversations/:id/messages", func(c *gin.Context) {
+			var logs []model.AgentTaskLog
+			db.DB.Where("task_id = ?", c.Param("id")).
+				Order("timestamp asc").
+				Limit(200).
+				Find(&logs)
+			c.JSON(200, logs)
+		})
+
+		// 关闭对话
+		authGroup.POST("/agent-conversations/:id/close", func(c *gin.Context) {
+			taskID := c.Param("id")
+			var task model.AgentTask
+			if err := db.DB.Where("id = ?", taskID).First(&task).Error; err != nil {
+				c.JSON(404, gin.H{"error": "conversation not found"})
+				return
+			}
+
+			gateway.Gateway.CancelTask(taskID)
+
+			c.JSON(200, gin.H{"ok": true})
+		})
 	}
 
 	// ═══════════════════════════════════════════
@@ -1087,6 +1589,35 @@ func main() {
 			return
 		}
 		gateway.Gateway.HandleWS(conn)
+	})
+
+	// Sandbox List (代理到 Bridge)
+	r.GET("/api/sandboxes", func(c *gin.Context) {
+		resp, err := http.Get("http://127.0.0.1:8088/api/sandboxes")
+		if err != nil {
+			c.JSON(502, gin.H{"error": "Bridge unreachable"})
+			return
+		}
+		defer resp.Body.Close()
+		var sandboxes []interface{}
+		json.NewDecoder(resp.Body).Decode(&sandboxes)
+		c.JSON(200, sandboxes)
+	})
+
+	// Sandbox Dispatch (代理到 Bridge)
+	r.POST("/api/sandboxes/dispatch", func(c *gin.Context) {
+		resp, err := http.Post("http://127.0.0.1:8088/api/dispatch", "application/json", c.Request.Body)
+		if err != nil {
+			c.JSON(502, gin.H{"error": "Bridge unreachable"})
+			return
+		}
+		defer resp.Body.Close()
+		var result interface{}
+		json.NewDecoder(resp.Body).Decode(&result)
+		c.Data(resp.StatusCode, "application/json", func() []byte {
+			b, _ := json.Marshal(result)
+			return b
+		}())
 	})
 
 	// 平台内部 WS (Agent 连接)

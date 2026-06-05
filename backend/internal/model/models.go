@@ -13,11 +13,13 @@ type User struct {
 }
 
 type Agent struct {
-	ID         uint      `json:"id" gorm:"primaryKey"`
-	AgentID    string    `json:"agent_id" gorm:"uniqueIndex"`
-	Name       string    `json:"name"`
-	Status     string    `json:"status" gorm:"default:offline"` // online, offline, busy
-	LastPing   time.Time `json:"last_ping"`
+	ID           uint      `json:"id" gorm:"primaryKey"`
+	AgentID      string    `json:"agent_id" gorm:"uniqueIndex"`
+	Name         string    `json:"name"`
+	Status       string    `json:"status" gorm:"default:offline"` // online, offline, busy
+	LastPing     time.Time `json:"last_ping"`
+	DefaultRepo  string    `json:"default_repo"`   // 默认 Git 仓库地址
+	DefaultBranch string   `json:"default_branch"` // 默认分支
 }
 
 type Task struct {
@@ -101,12 +103,32 @@ type AgentNode struct {
 
 // AgentEdge: 编排中的连接边
 type AgentEdge struct {
-	ID         uint   `json:"id" gorm:"primaryKey"`
-	FlowID     uint   `json:"flow_id" gorm:"index"`
-	SourceID   string `json:"source_id"`
-	TargetID   string `json:"target_id"`
-	Condition  string `json:"condition"`             // 条件表达式 (可选)
+	ID        uint   `json:"id" gorm:"primaryKey"`
+	FlowID    uint   `json:"flow_id" gorm:"index"`
+	SourceID  string `json:"source_id"`
+	TargetID  string `json:"target_id"`
+	Condition string `json:"condition"` // 条件表达式 (可选)
 }
+
+// ─── 新增: Prompt 模板管理 (Langfuse fallback) ───
+
+// PromptTemplate: 提示词模板
+type PromptTemplate struct {
+	ID          uint      `json:"id" gorm:"primaryKey"`
+	Name        string    `json:"name" gorm:"uniqueIndex"` // 模板名称，如 "go-backend-dev-v2"
+	Content     string    `json:"content" gorm:"type:text"` // 模板内容，支持 {{variable}} 语法
+	Description string    `json:"description"`              // 模板说明
+	Version     int       `json:"version" gorm:"default:1"` // 版本号
+	Source      string    `json:"source" gorm:"default:local"` // local / langfuse
+	LangfuseID  string    `json:"langfuse_id"`              // Langfuse prompt ID (如果来源是 langfuse)
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// ─── 新增: FlowExecution 扩展字段 ───
+
+// FlowExecution 已在 flow_runtime.go 定义，这里不重复
+// 需要的 approval 相关字段在 FlowExecution 中通过 migration 添加
 
 // ─── 新增: 中枢知识管理 (Memory Hub) ───
 
@@ -159,5 +181,6 @@ func AutoMigrateList() []interface{} {
 		&User{}, &Agent{}, &Task{}, &TaskStep{}, &File{},
 		&AgentTerminal{}, &AgentFlow{}, &AgentNode{}, &AgentEdge{},
 		&KnowledgeEntry{}, &MemorySession{}, &AuditLog{},
+		&PromptTemplate{},
 	}
 }

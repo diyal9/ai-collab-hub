@@ -54,15 +54,31 @@
 
     <!-- Tasks -->
     <div v-if="activeTab === 'tasks'" class="space-y-4">
-      <div class="flex space-x-2">
-        <button @click="showAddTask = true"
-          class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm">
-          + 下发任务
-        </button>
-        <button @click="autoDispatch"
-          class="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 text-sm">
-          <svg class="w-4 h-4 inline" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg> 自动匹配分发
-        </button>
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <div class="flex space-x-2">
+          <button @click="showAddTask = true"
+            class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm">
+            + 下发任务
+          </button>
+          <button @click="autoDispatch"
+            class="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 text-sm">
+            <svg class="w-4 h-4 inline" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg> 自动匹配分发
+          </button>
+        </div>
+        
+        <!-- 分类筛选 -->
+        <div class="flex space-x-1 bg-gray-100 rounded-lg p-1 text-sm">
+          <button v-for="tab in taskFilterTabs" :key="tab.key"
+            @click="taskFilter = tab.key"
+            class="px-3 py-1.5 rounded-md transition"
+            :class="taskFilter === tab.key ? 'bg-white text-gray-800 shadow-sm font-medium' : 'text-gray-500 hover:text-gray-700'">
+            {{ tab.label }}
+            <span v-if="tab.count > 0" class="ml-1 text-xs px-1.5 py-0.5 rounded-full"
+              :class="taskFilter === tab.key ? 'bg-blue-100 text-blue-700' : 'bg-gray-200 text-gray-600'">
+              {{ tab.count }}
+            </span>
+          </button>
+        </div>
       </div>
 
       <div class="bg-white rounded-lg shadow overflow-hidden">
@@ -71,28 +87,38 @@
             <tr>
               <th class="px-4 py-2 text-left text-xs text-gray-500">任务 ID</th>
               <th class="px-4 py-2 text-left text-xs text-gray-500">标题</th>
-              <th class="px-4 py-2 text-left text-xs text-gray-500">技能要求</th>
+              <th class="px-4 py-2 text-left text-xs text-gray-500">类型</th>
               <th class="px-4 py-2 text-left text-xs text-gray-500">状态</th>
+              <th class="px-4 py-2 text-left text-xs text-gray-500">进度</th>
               <th class="px-4 py-2 text-left text-xs text-gray-500">时间</th>
               <th class="px-4 py-2 text-left text-xs text-gray-500">操作</th>
             </tr>
           </thead>
           <tbody class="divide-y">
-            <tr v-for="t in tasks" :key="t.id" class="hover:bg-gray-50">
+            <tr v-for="t in paginatedTasks" :key="t.id" class="hover:bg-gray-50">
               <td class="px-4 py-2 text-sm font-mono">{{ t.id.slice(-8) }}</td>
               <td class="px-4 py-2 text-sm">
                 {{ t.title }}
+                <span v-if="t.conversation_mode" class="text-xs text-blue-500 ml-1">💬 对话</span>
                 <span v-if="t.parent_task_id" class="text-xs text-gray-400 ml-1">↩ 子任务</span>
               </td>
               <td class="px-4 py-2">
-                <span v-if="t.required_skills" class="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">
-                  {{ parseSkillsShort(t.required_skills) }}
+                <span class="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 capitalize">
+                  {{ t.executor || 'shell' }}
                 </span>
-                <span v-else class="text-xs text-gray-400">不限</span>
               </td>
               <td class="px-4 py-2">
                 <span class="text-xs px-2 py-1 rounded-full"
                   :class="taskBadge(t.status)">{{ t.status }}</span>
+              </td>
+              <td class="px-4 py-2 text-sm">
+                <div class="flex items-center gap-2">
+                  <div class="w-16 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                    <div class="h-full bg-blue-500 rounded-full transition-all"
+                      :style="{ width: t.progress + '%' }"></div>
+                  </div>
+                  <span class="text-xs text-gray-500">{{ t.progress }}%</span>
+                </div>
               </td>
               <td class="px-4 py-2 text-sm text-gray-500">{{ formatTime(t.created_at) }}</td>
               <td class="px-4 py-2 space-x-2">
@@ -106,8 +132,31 @@
                   class="text-red-600 text-sm hover:underline">取消</button>
               </td>
             </tr>
+            <tr v-if="paginatedTasks.length === 0">
+              <td colspan="7" class="px-4 py-8 text-center text-gray-400">暂无匹配任务</td>
+            </tr>
           </tbody>
         </table>
+        
+        <!-- 分页 -->
+        <div v-if="totalPages > 1" class="flex items-center justify-between px-4 py-3 border-t bg-gray-50">
+          <span class="text-sm text-gray-500">共 {{ filteredTasks.length }} 条，第 {{ currentPage }}/{{ totalPages }} 页</span>
+          <div class="flex space-x-1">
+            <button @click="currentPage = 1" :disabled="currentPage === 1"
+              class="px-2 py-1 text-sm rounded border bg-white disabled:opacity-50 hover:bg-gray-100">首页</button>
+            <button @click="currentPage--" :disabled="currentPage === 1"
+              class="px-2 py-1 text-sm rounded border bg-white disabled:opacity-50 hover:bg-gray-100">上一页</button>
+            <button v-for="p in visiblePages" :key="p" @click="currentPage = p"
+              class="px-2 py-1 text-sm rounded border"
+              :class="currentPage === p ? 'bg-blue-600 text-white border-blue-600' : 'bg-white hover:bg-gray-100'">
+              {{ p }}
+            </button>
+            <button @click="currentPage++" :disabled="currentPage === totalPages"
+              class="px-2 py-1 text-sm rounded border bg-white disabled:opacity-50 hover:bg-gray-100">下一页</button>
+            <button @click="currentPage = totalPages" :disabled="currentPage === totalPages"
+              class="px-2 py-1 text-sm rounded border bg-white disabled:opacity-50 hover:bg-gray-100">末页</button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -262,7 +311,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, watch } from 'vue'
 import { api } from '../api/index'
 
 const tabs = [
@@ -273,6 +322,9 @@ const tabs = [
 const activeTab = ref('instances')
 const agents = ref([])
 const tasks = ref([])
+const taskFilter = ref('all')
+const currentPage = ref(1)
+const pageSize = 15
 const approvals = ref([])
 const showAddAgent = ref(false)
 const showAddTask = ref(false)
@@ -290,6 +342,47 @@ const subtask = ref({ title: '', prompt: '', timeoutMinutes: 30 })
 const allSkills = ['terminal', 'browser', 'file', 'web', 'code-execution', 'editor', 'mcp', 'git']
 
 const onlineAgents = computed(() => agents.value.filter(a => a.status === 'online' || a.status === 'busy'))
+
+// 分类筛选
+const filteredTasks = computed(() => {
+  const list = tasks.value
+  switch (taskFilter.value) {
+    case 'running': return list.filter(t => t.status === 'running' || t.status === 'queued')
+    case 'completed': return list.filter(t => t.status === 'completed')
+    case 'failed': return list.filter(t => t.status === 'failed' || t.status === 'cancelled')
+    case 'conversation': return list.filter(t => t.conversation_mode)
+    default: return list
+  }
+})
+
+// 分页
+const totalPages = computed(() => Math.ceil(filteredTasks.value.length / pageSize) || 1)
+const paginatedTasks = computed(() => {
+  const start = (currentPage.value - 1) * pageSize
+  return filteredTasks.value.slice(start, start + pageSize)
+})
+
+const visiblePages = computed(() => {
+  const total = totalPages.value
+  const current = currentPage.value
+  const pages = []
+  const start = Math.max(1, current - 2)
+  const end = Math.min(total, start + 4)
+  for (let i = start; i <= end; i++) pages.push(i)
+  return pages
+})
+
+// 分类标签带计数
+const taskFilterTabs = computed(() => [
+  { key: 'all', label: '全部', count: tasks.value.length },
+  { key: 'running', label: '运行中', count: tasks.value.filter(t => t.status === 'running' || t.status === 'queued').length },
+  { key: 'completed', label: '已完成', count: tasks.value.filter(t => t.status === 'completed').length },
+  { key: 'failed', label: '失败/取消', count: tasks.value.filter(t => t.status === 'failed' || t.status === 'cancelled').length },
+  { key: 'conversation', label: '对话', count: tasks.value.filter(t => t.conversation_mode).length },
+])
+
+// 切换筛选时重置页码
+watch(taskFilter, () => { currentPage.value = 1 })
 
 const hubWsUrl = computed(() => {
   const loc = window.location
@@ -435,7 +528,11 @@ const refreshLogs = async () => {
     if (data.length === 0) {
       taskLogs.value = '<span class="text-gray-500">暂无日志输出</span>'
     } else {
-      taskLogs.value = data.map(l => `<div class="mb-1"><span class="text-gray-500">[${formatTime(l.timestamp)}]</span> ${l.message || l.output || l.text}</div>`).join('')
+      taskLogs.value = data.map(l => {
+        const typeTag = l.type ? `<span class="text-blue-400 font-bold mr-2">[${l.type.toUpperCase()}]</span>` : ''
+        const text = l.content || l.message || l.output || l.text || '(no content)'
+        return `<div class="mb-1"><span class="text-gray-500 mr-2">[${formatTime(l.timestamp)}]</span>${typeTag}${text}</div>`
+      }).join('')
     }
   } catch (e) {
     taskLogs.value = `<span class="text-red-400">加载失败: ${e.message}</span>`

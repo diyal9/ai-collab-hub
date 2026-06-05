@@ -28,3 +28,19 @@ Thumbs.db
 
 # Logs
 *.log
+# Binaries
+*_linux_amd64
+*backend
+*.exe
+*.bak
+
+# Logs
+*.log
+
+# Node
+node_modules/
+dist/
+
+# OS
+.DS_Store
+Thumbs.db

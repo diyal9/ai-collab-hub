@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"ai-collab-hub/internal/db"
+	"ai-collab-hub/internal/llm"
 	"ai-collab-hub/internal/model"
 
 	"github.com/gorilla/websocket"
@@ -111,6 +112,8 @@ func (gw *AgentGateway) handleMessage(client *AgentClient, msg *WSMessage) {
 		gw.handleComplete(msg.Payload)
 	case "task.error":
 		gw.handleError(msg.Payload)
+	case "task.input":
+		gw.handleTaskInput(msg.Payload)
 	case "approval.request":
 		gw.handleApprovalRequest(client, msg.Payload)
 	}
@@ -215,8 +218,21 @@ func (gw *AgentGateway) handleProgress(payload map[string]interface{}) {
 	db.DB.Create(&taskLog)
 
 	// 更新任务状态为 running
-	db.DB.Model(&model.AgentTask{}).Where("id = ?", taskID).
-		Update("status", "running")
+	updates := map[string]interface{}{
+		"status": "running",
+	}
+
+	// 解析进度百分比 (0-100)
+	if progress, ok := payload["progress"]; ok {
+		switch v := progress.(type) {
+		case float64:
+			updates["progress"] = int(v)
+		case int:
+			updates["progress"] = v
+		}
+	}
+
+	db.DB.Model(&model.AgentTask{}).Where("id = ?", taskID).Updates(updates)
 
 	// 广播给 SSE 订阅者
 	broadcastTaskLog(taskID, logType, content)
@@ -261,10 +277,15 @@ func (gw *AgentGateway) handleComplete(payload map[string]interface{}) {
 	output, _ := payload["output"].(string)
 
 	now := time.Now()
-	db.DB.Model(&model.AgentTask{}).Where("id = ?", taskID).Updates(map[string]interface{}{
+	updates := map[string]interface{}{
 		"status":       "completed",
 		"completed_at": now,
-	})
+		"progress":     100,
+	}
+	if output != "" {
+		updates["result"] = output
+	}
+	db.DB.Model(&model.AgentTask{}).Where("id = ?", taskID).Updates(updates)
 
 	// 记录最终输出
 	db.DB.Create(&model.AgentTaskLog{
@@ -545,13 +566,24 @@ func (gw *AgentGateway) DispatchToSpecificAgent(agentID uint) {
 
 	log.Printf("[Gateway] Dispatched task %s to agent %d", dispatchedTask.ID, agentID)
 
+	// 构建 v2 task.start payload (包含 executor, config, steps, conversation_mode)
+	startPayload := map[string]interface{}{
+		"task_id": dispatchedTask.ID,
+		"title":   dispatchedTask.Title,
+		"prompt":  finalPrompt,
+	}
+	if dispatchedTask.Executor != "" {
+		startPayload["executor"] = dispatchedTask.Executor
+		startPayload["config"] = llm.ParseExecutorConfig(dispatchedTask.ExecutorConfig)
+	}
+	if dispatchedTask.Steps != "" {
+		startPayload["steps"] = llm.ParseSteps(dispatchedTask.Steps)
+	}
+	startPayload["conversation_mode"] = dispatchedTask.ConversationMode
+
 	gw.SendToAgent(agentID, WSMessage{
 		Method: "task.start",
-		Payload: map[string]interface{}{
-			"task_id": dispatchedTask.ID,
-			"title":   dispatchedTask.Title,
-			"prompt":  finalPrompt,
-		},
+		Payload: startPayload,
 	})
 }
 
@@ -601,13 +633,24 @@ func (gw *AgentGateway) DispatchByCapabilityMatching() {
 
 		log.Printf("[Gateway] Auto-dispatched task %s to agent %d (capability match)", task.ID, agentID)
 
+		// 构建 v2 task.start payload
+		startPayload := map[string]interface{}{
+			"task_id": task.ID,
+			"title":   task.Title,
+			"prompt":  finalPrompt,
+		}
+		if task.Executor != "" {
+			startPayload["executor"] = task.Executor
+			startPayload["config"] = llm.ParseExecutorConfig(task.ExecutorConfig)
+		}
+		if task.Steps != "" {
+			startPayload["steps"] = llm.ParseSteps(task.Steps)
+		}
+		startPayload["conversation_mode"] = task.ConversationMode
+
 		gw.SendToAgent(agentID, WSMessage{
 			Method: "task.start",
-			Payload: map[string]interface{}{
-				"task_id": task.ID,
-				"title":   task.Title,
-				"prompt":  finalPrompt,
-			},
+			Payload: startPayload,
 		})
 	}
 }
@@ -674,6 +717,64 @@ func (gw *AgentGateway) ReplyToApproval(approvalID uint, reply string, approved 
 	}
 
 	return nil
+}
+
+// ─── 多轮对话输入 (Hub → Agent) ───
+
+// HandleTaskInput 公开方法：向运行中的任务发送中间输入 (多轮对话)
+func (gw *AgentGateway) HandleTaskInput(taskID string, content string) error {
+	var task model.AgentTask
+	if err := db.DB.Where("id = ?", taskID).First(&task).Error; err != nil {
+		return err
+	}
+
+	if task.Status != "running" && task.Status != "waiting_input" {
+		return fmt.Errorf("task %s is not running (status: %s)", taskID, task.Status)
+	}
+
+	// 记录用户输入日志
+	db.DB.Create(&model.AgentTaskLog{
+		TaskID:  taskID,
+		Type:    "user_input",
+		Content: content,
+	})
+
+	// 转发给 Agent
+	err := gw.SendToAgent(task.AgentID, WSMessage{
+		Method: "task.input",
+		Payload: map[string]interface{}{
+			"task_id": taskID,
+			"content": content,
+		},
+	})
+	if err != nil {
+		return err
+	}
+
+	// 恢复任务状态
+	if task.Status == "waiting_input" {
+		db.DB.Model(&model.AgentTask{}).Where("id = ?", taskID).Update("status", "running")
+	}
+
+	return nil
+}
+
+// handleTaskInput 内部处理: Agent → Hub 的 task.input 响应
+func (gw *AgentGateway) handleTaskInput(payload map[string]interface{}) {
+	taskID, _ := payload["task_id"].(string)
+	content, _ := payload["content"].(string)
+
+	log.Printf("[Task %s] Agent input response: %s", taskID, truncate(content, 200))
+
+	// 记录 Agent 响应日志
+	db.DB.Create(&model.AgentTaskLog{
+		TaskID:  taskID,
+		Type:    "stdout",
+		Content: content,
+	})
+
+	// 广播给 SSE 订阅者
+	broadcastTaskLog(taskID, "stdout", content)
 }
 
 // ─── 心跳检查 ───

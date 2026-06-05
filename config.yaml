@@ -1,9 +1,14 @@
 server:
   port: 8087
   jwt_secret: "your-super-secret-jwt-key-change-me"
+  public_url: "http://47.107.172.201:8089/hermesshare"
 database:
   driver: sqlite3
   dsn: "./data.db"
 storage:
   upload_dir: "./uploads"
   max_size_mb: 100
+langfuse:
+  url: ""
+  public_key: ""
+  secret_key: ""

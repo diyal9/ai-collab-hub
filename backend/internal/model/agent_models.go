@@ -40,12 +40,33 @@ type AgentTask struct {
 	RequiredSkills string `json:"required_skills" gorm:"type:text"` // JSON: ["coding", "git", "browser"]
 	ParentTaskID string   `json:"parent_task_id"`                 // 父任务 ID (用于上下文链)
 	ContextSnapshot string `json:"context_snapshot" gorm:"type:text"` // 上下文快照 (父任务输出等)
-	CreatedAt   time.Time `json:"created_at"`
-	StartedAt   time.Time `json:"started_at"`
-	CompletedAt time.Time `json:"completed_at"`
-	Error       string    `json:"error"`
-	TimeoutAt   time.Time `json:"timeout_at"`                   // 任务超时时间点
-	TimeoutMinutes int    `json:"timeout_minutes" gorm:"default:30"` // 默认30分钟超时
+	// v2 Agent Bridge 扩展字段
+	Executor        string    `json:"executor" gorm:"default:shell"`        // 执行环境: "shell", "llm", "cursor", "browser"
+	ExecutorConfig  string    `json:"executor_config" gorm:"type:text"`     // JSON: { model, work_dir, timeout, env, allowed_cmds, max_memory, project_path, target_file }
+	ConversationMode bool     `json:"conversation_mode" gorm:"default:false"` // 是否多轮对话模式
+	Result          string    `json:"result" gorm:"type:text"`              // 任务最终输出/结果
+	Steps           string    `json:"steps" gorm:"type:text"`               // JSON: 多步骤定义
+	Progress        int       `json:"progress" gorm:"default:0"`            // 当前进度百分比 (0-100)
+	CreatedAt       time.Time `json:"created_at"`
+	StartedAt       time.Time `json:"started_at"`
+	CompletedAt     time.Time `json:"completed_at"`
+	Error           string    `json:"error"`
+	TimeoutAt       time.Time `json:"timeout_at"`                   // 任务超时时间点
+	TimeoutMinutes  int       `json:"timeout_minutes" gorm:"default:30"` // 默认30分钟超时
+}
+
+// LLMProviderConfig: LLM 服务提供者配置
+type LLMProviderConfig struct {
+	ID           uint      `json:"id" gorm:"primaryKey"`
+	Name         string    `json:"name"`                   // openai, anthropic, ollama
+	BaseURL      string    `json:"base_url"`               // API 基础地址
+	APIKey       string    `json:"api_key"`                // API 密钥 (不返回前端)
+	DefaultModel string    `json:"default_model"`          // 默认模型
+	MaxTokens    int       `json:"max_tokens"`             // 最大输出 tokens
+	Timeout      int       `json:"timeout"`                // 请求超时 (秒)
+	Enabled      bool      `json:"enabled" gorm:"default:true"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 // AgentTaskLog: Agent 任务的实时日志流
@@ -75,5 +96,6 @@ type ApprovalRequest struct {
 func AutoMigrateListExtended() []interface{} {
 	return []interface{}{
 		&AgentInstance{}, &AgentSession{}, &AgentTask{}, &AgentTaskLog{}, &ApprovalRequest{},
+		&LLMProviderConfig{},
 	}
 }

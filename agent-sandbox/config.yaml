@@ -1,0 +1,10 @@
+# Agent Sandbox 配置文件
+
+sandbox:
+  id: "sandbox-node-01"
+
+bridge:
+  url: "ws://localhost:8087/ws/sandbox"  # <-- 连接到 Agent Bridge 的地址
+
+log:
+  level: "info"

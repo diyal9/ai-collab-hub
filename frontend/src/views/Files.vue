@@ -1,13 +1,16 @@
 <template>
   <div>
-    <h1 class="text-2xl font-bold flex items-center gap-2"><svg class="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg> 文件管理</h1>
+    <div class="flex justify-between items-center mb-6">
+      <h1 class="text-2xl font-bold flex items-center gap-2"><svg class="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg> 文件管理</h1>
 
-    <!-- 上传 -->
-    <div v-if="activeTab !== 'shared'" class="mb-6">
-      <label class="inline-flex items-center bg-blue-600 text-white px-4 py-2 rounded-lg cursor-pointer hover:bg-blue-700">
-        📤 上传文件
-        <input type="file" @change="upload" class="hidden" />
-      </label>
+      <!-- 上传 -->
+      <div v-if="activeTab !== 'shared'">
+        <label class="inline-flex items-center text-blue-600 border border-blue-600 px-4 py-2 rounded-lg cursor-pointer hover:bg-blue-50 transition-colors">
+          <svg class="w-5 h-5 mr-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+          上传文件
+          <input type="file" @change="upload" class="hidden" />
+        </label>
+      </div>
     </div>
 
     <!-- Tab 切换 -->
