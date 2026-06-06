@@ -2,6 +2,7 @@ package engine
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -190,6 +191,11 @@ type FlowExecutionCtx struct {
     Done       chan struct{}
     Paused     bool
     PauseCh    chan struct{}
+    
+    // Phase 1: Resilience
+    Ctx         context.Context
+    Cancel      context.CancelFunc
+    RetryCounts map[string]int
 }
 
 func (fm *FlowManager) Get(execID uint) (*FlowExecutionCtx, bool) {
@@ -247,16 +253,18 @@ func StartFlow(flowID uint) (uint, error) {
     }
 
     ctx := &FlowExecutionCtx{
-        Exec:       exec,
-        Flow:       flow,
-        Graph:      graph,
-        InDegree:   inDegree,
-        Variables:  make(map[string]interface{}),
-        Steps:      make(map[string]*FlowStep),
-        ReadyQueue: make(chan string, 64),
-        Done:       make(chan struct{}),
-        PauseCh:    make(chan struct{}),
+        Exec:        exec,
+        Flow:        flow,
+        Graph:       graph,
+        InDegree:    inDegree,
+        Variables:   make(map[string]interface{}),
+        Steps:       make(map[string]*FlowStep),
+        ReadyQueue:  make(chan string, 64),
+        Done:        make(chan struct{}),
+        PauseCh:     make(chan struct{}),
+        RetryCounts: make(map[string]int),
     }
+    ctx.Ctx, ctx.Cancel = context.WithCancel(context.Background())
     
     Manager.Set(ctx)
     ws.Hub.Broadcast <- []byte(fmt.Sprintf(`{"type":"flow_start","exec_id":%d,"flow_id":%d}`, exec.ID, flow.ID))
@@ -319,16 +327,18 @@ func RecoverFlows() {
         }
 
         ctx := &FlowExecutionCtx{
-            Exec:       &exec,
-            Flow:       flow,
-            Graph:      graph,
-            InDegree:   inDegree,
-            Variables:  variables,
-            Steps:      stepMap,
-            ReadyQueue: make(chan string, 64),
-            Done:       make(chan struct{}),
-            PauseCh:    make(chan struct{}),
+            Exec:        &exec,
+            Flow:        flow,
+            Graph:       graph,
+            InDegree:    inDegree,
+            Variables:   variables,
+            Steps:       stepMap,
+            ReadyQueue:  make(chan string, 64),
+            Done:        make(chan struct{}),
+            PauseCh:     make(chan struct{}),
+            RetryCounts: make(map[string]int),
         }
+        ctx.Ctx, ctx.Cancel = context.WithCancel(context.Background())
         Manager.Set(ctx)
 
         // 重新计算 ReadyQueue
@@ -353,10 +363,22 @@ func (ctx *FlowExecutionCtx) Run() {
             go ctx.executeNodeAsync(nodeID)
         case <-ctx.PauseCh:
             log.Printf("[Flow] Execution %d resumed", ctx.Exec.ID)
-            // 继续循环处理 ReadyQueue
+        case <-ctx.Ctx.Done():
+            log.Printf("[Flow] Execution %d cancelled (Shutdown)", ctx.Exec.ID)
+            return
         case <-ctx.Done:
             return
         }
+    }
+}
+
+// Shutdown cancels all active flows gracefully
+func Shutdown() {
+    Manager.mu.RLock()
+    defer Manager.mu.RUnlock()
+    log.Printf("[Flow] Shutting down %d active flows...", len(Manager.activeFlows))
+    for _, ctx := range Manager.activeFlows {
+        ctx.Cancel()
     }
 }
 
@@ -367,11 +389,12 @@ func (ctx *FlowExecutionCtx) executeNodeAsync(nodeID string) {
     node := ctx.Graph[nodeID]
     ctx.Mu.Unlock()
     
-    if node == nil {
+    if node == nil || node.NodeType == "trigger" {
+        ctx.onNodeComplete(nodeID)
         return
     }
     
-    // 检查上游是否都完成
+    // Check upstream
     ctx.Mu.Lock()
     for _, dep := range node.EdgesIn {
         if step, ok := ctx.Steps[dep]; ok && (step.Status == "skipped" || step.Status == "failed") {
@@ -383,55 +406,145 @@ func (ctx *FlowExecutionCtx) executeNodeAsync(nodeID string) {
     }
     ctx.Mu.Unlock()
     
-    // 创建 running 步骤
+    // Phase 1: Check Circuit Breaker
+    if cb := GetCircuitBreaker(node.NodeType); cb != nil && !cb.Allow() {
+        log.Printf("[Flow] Node %s blocked by circuit breaker", nodeID)
+        // Retry later? For now, fail immediately to avoid pileup
+        ctx.Mu.Lock()
+        step := &FlowStep{
+            ExecID: ctx.Exec.ID, NodeID: nodeID, NodeName: node.Name, NodeType: node.NodeType,
+            Status: "failed", Error: "Circuit breaker open", Output: "Blocked by circuit breaker",
+            StartedAt: time.Now(), EndedAt: time.Now(),
+        }
+        db.DB.Create(step)
+        ctx.Steps[nodeID] = step
+        ctx.Mu.Unlock()
+        ctx.markDownstreamSkipped(nodeID)
+        ctx.failExecution("Circuit breaker open")
+        return
+    }
+
+    // Create running step
     step := &FlowStep{
-        ExecID:    ctx.Exec.ID,
-        NodeID:    nodeID,
-        NodeName:  node.Name,
-        NodeType:  node.NodeType,
-        Status:    "running",
-        StartedAt: time.Now(),
+        ExecID: ctx.Exec.ID, NodeID: nodeID, NodeName: node.Name, NodeType: node.NodeType,
+        Status: "running", StartedAt: time.Now(),
     }
     db.DB.Create(step)
-    
     ctx.Mu.Lock()
     ctx.Steps[nodeID] = step
     ctx.Mu.Unlock()
     
     ws.Hub.Broadcast <- []byte(fmt.Sprintf(`{"type":"node_update","exec_id":%d,"node_id":"%s","status":"running"}`, ctx.Exec.ID, nodeID))
 
-    var err error
-    switch node.NodeType {
-    case "agent":
-        err = ctx.executeAgentNode(node, step)
-    case "condition":
-        err = ctx.executeConditionNode(node, step)
-    case "merge":
-        err = ctx.executeMergeNode(node, step)
-    case "trigger":
-        err = ctx.executeTriggerNode(node, step)
-    case "code":
-        err = ctx.executeCodeNode(node, step)
-    case "sandbox":
-        err = ctx.executeSandboxNode(node, step)
-    case "webhook":
-        err = ctx.executeWebhookNode(node, step)
-    case "approval":
-        err = ctx.executeApprovalNode(node, step)
-    default:
-        err = fmt.Errorf("unknown node type: %s", node.NodeType)
+    // Phase 1: Timeout handling
+    timeout := 10 * time.Minute // Default
+    if node.Config != nil {
+        if t, ok := node.Config["timeout_minutes"].(float64); ok && t > 0 {
+            timeout = time.Duration(t) * time.Minute
+        }
     }
+    
+    // Execute with timeout
+    execCtx, execCancel := context.WithTimeout(ctx.Ctx, timeout)
+    defer execCancel()
+    
+    errCh := make(chan error, 1)
+    go func() {
+        var err error
+        switch node.NodeType {
+        case "agent": err = ctx.executeAgentNode(node, step)
+        case "condition": err = ctx.executeConditionNode(node, step)
+        case "merge": err = ctx.executeMergeNode(node, step)
+        case "code": err = ctx.executeCodeNode(node, step)
+        case "sandbox": err = ctx.executeSandboxNode(node, step)
+        case "webhook": err = ctx.executeWebhookNode(node, step)
+        case "approval": err = ctx.executeApprovalNode(node, step)
+        default: err = fmt.Errorf("unknown node type: %s", node.NodeType)
+        }
+        errCh <- err
+    }()
 
-    if err != nil {
-        if IsApprovalPending(err) {
-            ctx.Exec.Status = "waiting_approval"
-            ctx.Exec.PendingNodeID = nodeID
-            ctx.Exec.PendingAt = time.Now()
-            db.DB.Save(ctx.Exec)
-            ws.Hub.Broadcast <- []byte(fmt.Sprintf(`{"type":"flow_pause","exec_id":%d,"node_id":"%s"}`, ctx.Exec.ID, nodeID))
-            return // 暂停，不标记完成
+    select {
+    case err := <-errCh:
+        // Execution finished (success or error)
+        if err != nil {
+            if IsApprovalPending(err) {
+                ctx.Exec.Status = "waiting_approval"
+                ctx.Exec.PendingNodeID = nodeID
+                ctx.Exec.PendingAt = time.Now()
+                db.DB.Save(ctx.Exec)
+                ws.Hub.Broadcast <- []byte(fmt.Sprintf(`{"type":"flow_pause","exec_id":%d,"node_id":"%s"}`, ctx.Exec.ID, nodeID))
+                return
+            }
+            ctx.handleNodeFailure(nodeID, node, step, err)
+        } else {
+            // Phase 1: Record Success
+            if cb := GetCircuitBreaker(node.NodeType); cb != nil {
+                cb.RecordSuccess()
+            }
+            ctx.onNodeComplete(nodeID)
         }
         
+    case <-execCtx.Done():
+        // Phase 1: Timeout
+        errMsg := "Execution timed out"
+        if ctx.Ctx.Err() != nil {
+            errMsg = "Flow cancelled"
+        }
+        log.Printf("[Flow] Node %s %s", nodeID, errMsg)
+        
+        ctx.Mu.Lock()
+        step.Status = "failed"
+        step.Error = errMsg
+        step.EndedAt = time.Now()
+        ctx.Mu.Unlock()
+        db.DB.Save(step)
+        
+        if cb := GetCircuitBreaker(node.NodeType); cb != nil {
+            cb.RecordFailure() // Timeout counts as failure
+        }
+        // Retry on timeout? Yes, if retryable
+        ctx.handleNodeFailure(nodeID, node, step, fmt.Errorf(errMsg))
+    }
+}
+
+// handleNodeFailure implements Phase 1: Retry Logic
+func (ctx *FlowExecutionCtx) handleNodeFailure(nodeID string, node *dagNode, step *FlowStep, err error) {
+    ctx.Mu.Lock()
+    retryCount := ctx.RetryCounts[nodeID]
+    maxRetries := 3
+    if node.Config != nil {
+        if r, ok := node.Config["retry_count"].(float64); ok {
+            maxRetries = int(r)
+        }
+    }
+    
+    isRetryable := true
+    // 4xx errors are not retryable (check error string or type)
+    if strings.Contains(err.Error(), "status: 4") {
+        isRetryable = false
+    }
+    
+    ctx.Mu.Unlock()
+
+    if isRetryable && retryCount < maxRetries {
+        ctx.RetryCounts[nodeID] = retryCount + 1
+        delay := time.Duration(retryCount+1) * time.Second // Simple backoff
+        log.Printf("[Flow] Retrying node %s (attempt %d/%d) in %v", nodeID, retryCount+1, maxRetries, delay)
+        
+        // Update step status to retrying
+        ctx.Mu.Lock()
+        step.Status = "retrying"
+        step.Output = fmt.Sprintf("Retrying... (%d/%d)", retryCount+1, maxRetries)
+        ctx.Mu.Unlock()
+        db.DB.Save(step)
+        
+        time.AfterFunc(delay, func() {
+            ctx.ReadyQueue <- nodeID
+        })
+    } else {
+        // Final failure
+        log.Printf("[Flow] Node %s failed permanently: %v", nodeID, err)
         ctx.Mu.Lock()
         step.Status = "failed"
         step.Error = err.Error()
@@ -440,12 +553,13 @@ func (ctx *FlowExecutionCtx) executeNodeAsync(nodeID string) {
         db.DB.Save(step)
         
         ws.Hub.Broadcast <- []byte(fmt.Sprintf(`{"type":"node_update","exec_id":%d,"node_id":"%s","status":"failed","error":"%s"}`, ctx.Exec.ID, nodeID, err.Error()))
+        
+        if cb := GetCircuitBreaker(node.NodeType); cb != nil {
+            cb.RecordFailure()
+        }
         ctx.markDownstreamSkipped(nodeID)
         ctx.failExecution(err.Error())
-        return
     }
-
-    ctx.onNodeComplete(nodeID)
 }
 
 func (ctx *FlowExecutionCtx) onNodeComplete(nodeID string) {

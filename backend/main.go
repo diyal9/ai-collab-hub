@@ -9,14 +9,17 @@ import (
 	"ai-collab-hub/internal/llm"
 	"ai-collab-hub/internal/model"
 	"ai-collab-hub/internal/ws"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -1728,7 +1731,33 @@ func main() {
 
 	port := fmt.Sprintf(":%d", config.Cfg.Server.Port)
 	log.Println("AI Collab Hub starting on", port)
-	r.Run(port)
+	
+	// Phase 1: Graceful Shutdown
+	srv := &http.Server{
+		Addr:    port,
+		Handler: r,
+	}
+
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Listen: %s\n", err)
+		}
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	log.Println("Shutting down server...")
+
+	// Cancel active flows
+	engine.Shutdown()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Fatal("Server forced to shutdown:", err)
+	}
+	log.Println("Server exiting")
 }
 
 // ─── 工具函数 ───
