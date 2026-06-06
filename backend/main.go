@@ -146,6 +146,7 @@ func main() {
 		db.DB.AutoMigrate(m)
 	}
 	engine.AutoMigrateFlowRuntime()
+	engine.RecoverFlows() // 恢复崩溃后仍在运行的流程
 	engine.AutoMigrateGitWebhook()
 
 	// Init LLM provider status (after DB is ready)
@@ -394,22 +395,22 @@ func main() {
 			
 			if req.Source == "flow" && req.FlowID > 0 {
 				// 引用流程模式：执行流程并关联到任务
-				go func() {
-					exec, err := engine.ExecuteFlow(req.FlowID)
-					if err != nil {
-						log.Printf("[Flow] Execution failed: %v", err)
-						db.DB.Model(&model.Task{}).Where("id = ?", id).Updates(map[string]interface{}{
-							"status": "failed",
-							"flow_execution_id": exec.ID, // Still save ID if exec object exists
-						})
-					} else {
-						log.Printf("[Flow] Execution %d completed: %s", exec.ID, exec.Status)
-						db.DB.Model(&model.Task{}).Where("id = ?", id).Updates(map[string]interface{}{
-							"status": exec.Status,
-							"flow_execution_id": exec.ID,
-						})
-					}
-				}()
+			go func() {
+				execID, err := engine.StartFlow(req.FlowID)
+				if err != nil {
+					log.Printf("[Flow] Start failed: %v", err)
+					db.DB.Model(&model.Task{}).Where("id = ?", id).Updates(map[string]interface{}{
+						"status":            "failed",
+						"flow_execution_id": 0,
+					})
+				} else {
+					log.Printf("[Flow] Execution %d started", execID)
+					db.DB.Model(&model.Task{}).Where("id = ?", id).Updates(map[string]interface{}{
+						"flow_execution_id": execID,
+					})
+					// Status will be updated by async runner or WS
+				}
+			}()
 				
 				// 创建任务记录（仅用于展示和追踪）
 				task := model.Task{
@@ -645,14 +646,14 @@ func main() {
 		// ─── Flow 执行引擎 ───
 		authGroup.POST("/flows/:id/execute", func(c *gin.Context) {
 			flowID, _ := parseUint(c.Param("id"))
-			go func() {
-				exec, err := engine.ExecuteFlow(flowID)
-				if err != nil {
-					log.Printf("[Flow] Execution failed: %v", err)
-				} else {
-					log.Printf("[Flow] Execution %d completed: %s", exec.ID, exec.Status)
-				}
-			}()
+		go func() {
+			execID, err := engine.StartFlow(flowID)
+			if err != nil {
+				log.Printf("[Flow] Start failed: %v", err)
+			} else {
+				log.Printf("[Flow] Execution %d started", execID)
+			}
+		}()
 			c.JSON(200, gin.H{"ok": true, "message": "Flow execution started"})
 		})
 

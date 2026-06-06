@@ -10,12 +10,14 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"ai-collab-hub/internal/config"
 	"ai-collab-hub/internal/db"
 	"ai-collab-hub/internal/gateway"
 	"ai-collab-hub/internal/model"
+	"ai-collab-hub/internal/ws"
 )
 
 // ─── Flow 运行时模型 ───
@@ -68,21 +70,17 @@ type dagNode struct {
 
 // buildDAG 从 Flow 构建有向无环图
 func buildDAG(flow model.AgentFlow) (map[string]*dagNode, error) {
-	// 加载节点
 	var nodes []model.AgentNode
 	if err := db.DB.Where("flow_id = ?", flow.ID).Find(&nodes).Error; err != nil {
 		return nil, fmt.Errorf("load nodes: %w", err)
 	}
 
-	// 加载边
 	var edges []model.AgentEdge
 	if err := db.DB.Where("flow_id = ?", flow.ID).Find(&edges).Error; err != nil {
 		return nil, fmt.Errorf("load edges: %w", err)
 	}
 
 	graph := make(map[string]*dagNode)
-
-	// 解析节点配置
 	for _, n := range nodes {
 		var cfg map[string]interface{}
 		if n.Config != "" {
@@ -96,7 +94,6 @@ func buildDAG(flow model.AgentFlow) (map[string]*dagNode, error) {
 		}
 	}
 
-	// 建立边关系
 	for _, e := range edges {
 		if src, ok := graph[e.SourceID]; ok {
 			src.EdgesOut = append(src.EdgesOut, e.TargetID)
@@ -106,7 +103,6 @@ func buildDAG(flow model.AgentFlow) (map[string]*dagNode, error) {
 		}
 	}
 
-	// 环检测 + 拓扑排序
 	if hasCycle(graph) {
 		return nil, fmt.Errorf("flow contains cycle")
 	}
@@ -114,58 +110,37 @@ func buildDAG(flow model.AgentFlow) (map[string]*dagNode, error) {
 	return graph, nil
 }
 
-// hasCycle 检测有向图是否有环 (DFS)
 func hasCycle(graph map[string]*dagNode) bool {
-	visited := make(map[string]int) // 0=unvisited, 1=visiting, 2=visited
-
+	visited := make(map[string]int)
 	var dfs func(id string) bool
 	dfs = func(id string) bool {
-		if visited[id] == 1 {
-			return true // 环
-		}
-		if visited[id] == 2 {
-			return false
-		}
+		if visited[id] == 1 { return true }
+		if visited[id] == 2 { return false }
 		visited[id] = 1
 		if node, ok := graph[id]; ok {
 			for _, next := range node.EdgesOut {
-				if dfs(next) {
-					return true
-				}
+				if dfs(next) { return true }
 			}
 		}
 		visited[id] = 2
 		return false
 	}
-
 	for id := range graph {
-		if dfs(id) {
-			return true
-		}
+		if dfs(id) { return true }
 	}
 	return false
 }
 
-// topologicalSort 返回拓扑排序后的节点列表
 func topologicalSort(graph map[string]*dagNode) []string {
 	inDegree := make(map[string]int)
 	for id, node := range graph {
-		if _, ok := inDegree[id]; !ok {
-			inDegree[id] = 0
-		}
-		for _, out := range node.EdgesOut {
-			inDegree[out]++
-		}
+		if _, ok := inDegree[id]; !ok { inDegree[id] = 0 }
+		for _, out := range node.EdgesOut { inDegree[out]++ }
 	}
 
-	// Kahn 算法 (带闭环检测与空指针保护)
 	queue := []string{}
-	for id, deg := range inDegree {
-		if deg == 0 {
-			queue = append(queue, id)
-		}
-	}
-	sort.Strings(queue) // 稳定排序
+	for id, deg := range inDegree { if deg == 0 { queue = append(queue, id) } }
+	sort.Strings(queue)
 
 	result := []string{}
 	totalNodes := len(graph)
@@ -175,197 +150,503 @@ func topologicalSort(graph map[string]*dagNode) []string {
 		queue = queue[1:]
 		result = append(result, nodeID)
 
-		// 安全访问图节点
 		if n, exists := graph[nodeID]; exists && n != nil {
 			for _, next := range n.EdgesOut {
 				if _, ok := inDegree[next]; ok {
 					inDegree[next]--
-					if inDegree[next] == 0 {
-						queue = append(queue, next)
-					}
+					if inDegree[next] == 0 { queue = append(queue, next) }
 				}
 			}
 		}
 	}
 
-	// 检测闭环：如果排序出的节点数少于总节点数，说明存在环
-	if len(result) < totalNodes {
-		return nil // 返回空切片表示检测到闭环
-	}
-
+	if len(result) < totalNodes { return nil }
 	return result
 }
 
-// ─── 流程执行引擎 ───
+// ─── 生产级引擎：FlowManager & Context ───
 
-type FlowExecutor struct {
-	exec      *FlowExecution
-	graph     map[string]*dagNode
-	order     []string
-	variables map[string]interface{}
-	steps     map[string]*FlowStep
+var Manager = &FlowManager{
+    activeFlows: make(map[uint]*FlowExecutionCtx),
+    mu:          sync.RWMutex{},
 }
 
-// ExecuteFlow 执行一个 Flow
-func ExecuteFlow(flowID uint) (*FlowExecution, error) {
+type FlowManager struct {
+    activeFlows map[uint]*FlowExecutionCtx
+    mu          sync.RWMutex
+}
+
+type FlowExecutionCtx struct {
+    Exec      *FlowExecution
+    Flow      model.AgentFlow
+    Graph     map[string]*dagNode
+    InDegree  map[string]int
+    Variables map[string]interface{}
+    Steps     map[string]*FlowStep
+    
+    ReadyQueue chan string
+    Wg         sync.WaitGroup
+    Mu         sync.Mutex
+    Done       chan struct{}
+    Paused     bool
+    PauseCh    chan struct{}
+}
+
+func (fm *FlowManager) Get(execID uint) (*FlowExecutionCtx, bool) {
+    fm.mu.RLock()
+    defer fm.mu.RUnlock()
+    ctx, ok := fm.activeFlows[execID]
+    return ctx, ok
+}
+
+func (fm *FlowManager) Set(ctx *FlowExecutionCtx) {
+    fm.mu.Lock()
+    defer fm.mu.Unlock()
+    fm.activeFlows[ctx.Exec.ID] = ctx
+}
+
+func (fm *FlowManager) Remove(execID uint) {
+    fm.mu.Lock()
+    defer fm.mu.Unlock()
+    delete(fm.activeFlows, execID)
+}
+
+func StartFlow(flowID uint) (uint, error) {
 	var flow model.AgentFlow
 	if err := db.DB.First(&flow, flowID).Error; err != nil {
-		return nil, fmt.Errorf("flow not found: %w", err)
+		return 0, fmt.Errorf("flow not found: %w", err)
 	}
 
-	graph, err := buildDAG(flow)
-	if err != nil {
-		return nil, fmt.Errorf("build DAG: %w", err)
-	}
+    graph, err := buildDAG(flow)
+    if err != nil {
+        return 0, fmt.Errorf("build DAG: %w", err)
+    }
 
-	order := topologicalSort(graph)
-	if len(order) == 0 {
-		return nil, fmt.Errorf("no nodes in flow")
-	}
+    order := topologicalSort(graph)
+    if len(order) == 0 {
+        return 0, fmt.Errorf("no nodes in flow")
+    }
 
-	exec := &FlowExecution{
-		FlowID:    flow.ID,
-		FlowName:  flow.Name,
-		Status:    "running",
-		Variables: "{}",
-		StartedAt: time.Now(),
-	}
-	db.DB.Create(exec)
+    exec := &FlowExecution{
+        FlowID:    flow.ID,
+        FlowName:  flow.Name,
+        Status:    "running",
+        Variables: "{}",
+        StartedAt: time.Now(),
+    }
+    db.DB.Create(exec)
 
-	executor := &FlowExecutor{
-		exec:      exec,
-		graph:     graph,
-		order:     order,
-		variables: make(map[string]interface{}),
-		steps:     make(map[string]*FlowStep),
-	}
+    inDegree := make(map[string]int)
+    for id, node := range graph {
+        if _, ok := inDegree[id]; !ok {
+            inDegree[id] = 0
+        }
+        for _, out := range node.EdgesOut {
+            inDegree[out]++
+        }
+    }
 
-	log.Printf("[Flow] Executing %s (%d nodes)", flow.Name, len(order))
+    ctx := &FlowExecutionCtx{
+        Exec:       exec,
+        Flow:       flow,
+        Graph:      graph,
+        InDegree:   inDegree,
+        Variables:  make(map[string]interface{}),
+        Steps:      make(map[string]*FlowStep),
+        ReadyQueue: make(chan string, 64),
+        Done:       make(chan struct{}),
+        PauseCh:    make(chan struct{}),
+    }
+    
+    Manager.Set(ctx)
+    ws.Hub.Broadcast <- []byte(fmt.Sprintf(`{"type":"flow_start","exec_id":%d,"flow_id":%d}`, exec.ID, flow.ID))
 
-	// 按拓扑顺序执行
-	for _, nodeID := range order {
-		step, err := executor.executeNode(nodeID)
-		if err != nil {
-			// 审批等待：暂停流程，不标记为失败
-			if IsApprovalPending(err) {
-				log.Printf("[Flow] %s paused for approval at node %s", flow.Name, nodeID)
-				return exec, nil
-			}
-			exec.Status = "failed"
-			exec.Error = err.Error()
-			exec.EndedAt = time.Now()
-			db.DB.Save(exec)
-			return exec, err
-		}
+    // 初始化 ReadyQueue
+    for _, nodeID := range order {
+        if inDegree[nodeID] == 0 {
+            ctx.ReadyQueue <- nodeID
+        }
+    }
 
-		// 如果节点返回 skip，标记下游为 skipped
-		if step.Status == "skipped" {
-			executor.markDownstreamSkipped(nodeID)
-		}
-
-		// 如果是条件节点且结果为 false，跳过对应分支
-		if step.Status == "completed" {
-			if node, ok := graph[nodeID]; ok && node.NodeType == "condition" {
-				result := step.Output
-				if result == "false" {
-					executor.skipFalseBranch(nodeID)
-				}
-			}
-		}
-	}
-
-	exec.Status = "completed"
-	exec.EndedAt = time.Now()
-	db.DB.Save(exec)
-
-	log.Printf("[Flow] %s completed", flow.Name)
-	return exec, nil
+    go ctx.Run()
+    return exec.ID, nil
 }
 
-func (e *FlowExecutor) executeNode(nodeID string) (*FlowStep, error) {
-	node := e.graph[nodeID]
+func RecoverFlows() {
+    var runningExecs []FlowExecution
+    db.DB.Where("status = ?", "running").Find(&runningExecs)
 
-	// 检查前置依赖是否都完成
-	for _, dep := range node.EdgesIn {
-		if step, ok := e.steps[dep]; ok && (step.Status == "skipped" || step.Status == "failed") {
-			// 创建 skipped 步骤
-			step := &FlowStep{
-				ExecID:    e.exec.ID,
-				NodeID:    nodeID,
-				NodeName:  node.Name,
-				NodeType:  node.NodeType,
-				Status:    "skipped",
-				Output:    "Skipped due to upstream failure",
-			}
-			db.DB.Create(step)
-			e.steps[nodeID] = step
-			return step, nil
-		}
-	}
+    for _, exec := range runningExecs {
+        var flow model.AgentFlow
+        if err := db.DB.First(&flow, exec.FlowID).Error; err != nil {
+            log.Printf("[Flow] Recover failed: flow %d not found", exec.FlowID)
+            continue
+        }
 
-	// 创建运行中步骤
-	step := &FlowStep{
-		ExecID:    e.exec.ID,
-		NodeID:    nodeID,
-		NodeName:  node.Name,
-		NodeType:  node.NodeType,
-		Status:    "running",
-		StartedAt: time.Now(),
-	}
-	db.DB.Create(step)
-	e.steps[nodeID] = step
+        graph, err := buildDAG(flow)
+        if err != nil {
+            continue
+        }
 
-	log.Printf("[Flow] Executing node: %s (%s)", node.Name, node.NodeType)
+        inDegree := make(map[string]int)
+        for id, node := range graph {
+            if _, ok := inDegree[id]; !ok {
+                inDegree[id] = 0
+            }
+            for _, out := range node.EdgesOut {
+                inDegree[out]++
+            }
+        }
 
-	var err error
-	switch node.NodeType {
-	case "agent":
-		err = e.executeAgentNode(node, step)
-	case "condition":
-		err = e.executeConditionNode(node, step)
-	case "merge":
-		err = e.executeMergeNode(node, step)
-	case "trigger":
-		err = e.executeTriggerNode(node, step)
-	case "code":
-		err = e.executeCodeNode(node, step)
-	case "sandbox":
-		err = e.executeSandboxNode(node, step)
-	case "webhook":
-		err = e.executeWebhookNode(node, step)
-	case "approval":
-		err = e.executeApprovalNode(node, step)
-	default:
-		err = fmt.Errorf("unknown node type: %s", node.NodeType)
-	}
+        variables := make(map[string]interface{})
+        if exec.Variables != "" {
+            json.Unmarshal([]byte(exec.Variables), &variables)
+        }
 
-	if err != nil {
-		step.Status = "failed"
-		step.Error = err.Error()
-		step.EndedAt = time.Now()
-		db.DB.Save(step)
-		return step, err
-	}
+        var steps []FlowStep
+        db.DB.Where("exec_id = ?", exec.ID).Find(&steps)
+        
+        stepMap := make(map[string]*FlowStep)
+        for i := range steps {
+            stepMap[steps[i].NodeID] = &steps[i]
+            // 已完成节点的下游入度应减 1
+            node := graph[steps[i].NodeID]
+            if node != nil && (steps[i].Status == "completed" || steps[i].Status == "skipped") {
+                for _, out := range node.EdgesOut {
+                    inDegree[out]--
+                }
+            }
+        }
 
-	step.EndedAt = time.Now()
-	db.DB.Save(step)
-	return step, nil
+        ctx := &FlowExecutionCtx{
+            Exec:       &exec,
+            Flow:       flow,
+            Graph:      graph,
+            InDegree:   inDegree,
+            Variables:  variables,
+            Steps:      stepMap,
+            ReadyQueue: make(chan string, 64),
+            Done:       make(chan struct{}),
+            PauseCh:    make(chan struct{}),
+        }
+        Manager.Set(ctx)
+
+        // 重新计算 ReadyQueue
+        for nodeID, deg := range inDegree {
+            if deg == 0 && stepMap[nodeID] == nil {
+                ctx.ReadyQueue <- nodeID
+            }
+        }
+        
+        go ctx.Run()
+        log.Printf("[Flow] Recovered execution %d", exec.ID)
+    }
 }
 
-func (e *FlowExecutor) executeAgentNode(node *dagNode, step *FlowStep) error {
+func (ctx *FlowExecutionCtx) Run() {
+    defer Manager.Remove(ctx.Exec.ID)
+    
+    for {
+        select {
+        case nodeID := <-ctx.ReadyQueue:
+            ctx.Wg.Add(1)
+            go ctx.executeNodeAsync(nodeID)
+        case <-ctx.PauseCh:
+            log.Printf("[Flow] Execution %d resumed", ctx.Exec.ID)
+            // 继续循环处理 ReadyQueue
+        case <-ctx.Done:
+            return
+        }
+    }
+}
+
+func (ctx *FlowExecutionCtx) executeNodeAsync(nodeID string) {
+    defer ctx.Wg.Done()
+    
+    ctx.Mu.Lock()
+    node := ctx.Graph[nodeID]
+    ctx.Mu.Unlock()
+    
+    if node == nil {
+        return
+    }
+    
+    // 检查上游是否都完成
+    ctx.Mu.Lock()
+    for _, dep := range node.EdgesIn {
+        if step, ok := ctx.Steps[dep]; ok && (step.Status == "skipped" || step.Status == "failed") {
+            ctx.createSkippedStep(nodeID, node)
+            ctx.Mu.Unlock()
+            ctx.onNodeComplete(nodeID)
+            return
+        }
+    }
+    ctx.Mu.Unlock()
+    
+    // 创建 running 步骤
+    step := &FlowStep{
+        ExecID:    ctx.Exec.ID,
+        NodeID:    nodeID,
+        NodeName:  node.Name,
+        NodeType:  node.NodeType,
+        Status:    "running",
+        StartedAt: time.Now(),
+    }
+    db.DB.Create(step)
+    
+    ctx.Mu.Lock()
+    ctx.Steps[nodeID] = step
+    ctx.Mu.Unlock()
+    
+    ws.Hub.Broadcast <- []byte(fmt.Sprintf(`{"type":"node_update","exec_id":%d,"node_id":"%s","status":"running"}`, ctx.Exec.ID, nodeID))
+
+    var err error
+    switch node.NodeType {
+    case "agent":
+        err = ctx.executeAgentNode(node, step)
+    case "condition":
+        err = ctx.executeConditionNode(node, step)
+    case "merge":
+        err = ctx.executeMergeNode(node, step)
+    case "trigger":
+        err = ctx.executeTriggerNode(node, step)
+    case "code":
+        err = ctx.executeCodeNode(node, step)
+    case "sandbox":
+        err = ctx.executeSandboxNode(node, step)
+    case "webhook":
+        err = ctx.executeWebhookNode(node, step)
+    case "approval":
+        err = ctx.executeApprovalNode(node, step)
+    default:
+        err = fmt.Errorf("unknown node type: %s", node.NodeType)
+    }
+
+    if err != nil {
+        if IsApprovalPending(err) {
+            ctx.Exec.Status = "waiting_approval"
+            ctx.Exec.PendingNodeID = nodeID
+            ctx.Exec.PendingAt = time.Now()
+            db.DB.Save(ctx.Exec)
+            ws.Hub.Broadcast <- []byte(fmt.Sprintf(`{"type":"flow_pause","exec_id":%d,"node_id":"%s"}`, ctx.Exec.ID, nodeID))
+            return // 暂停，不标记完成
+        }
+        
+        ctx.Mu.Lock()
+        step.Status = "failed"
+        step.Error = err.Error()
+        step.EndedAt = time.Now()
+        ctx.Mu.Unlock()
+        db.DB.Save(step)
+        
+        ws.Hub.Broadcast <- []byte(fmt.Sprintf(`{"type":"node_update","exec_id":%d,"node_id":"%s","status":"failed","error":"%s"}`, ctx.Exec.ID, nodeID, err.Error()))
+        ctx.markDownstreamSkipped(nodeID)
+        ctx.failExecution(err.Error())
+        return
+    }
+
+    ctx.onNodeComplete(nodeID)
+}
+
+func (ctx *FlowExecutionCtx) onNodeComplete(nodeID string) {
+    ctx.Mu.Lock()
+    defer ctx.Mu.Unlock()
+    
+    step := ctx.Steps[nodeID]
+    if step == nil { return }
+    if step.Status == "running" {
+        step.Status = "completed"
+        step.EndedAt = time.Now()
+        db.DB.Save(step)
+        
+        ws.Hub.Broadcast <- []byte(fmt.Sprintf(`{"type":"node_update","exec_id":%d,"node_id":"%s","status":"completed"}`, ctx.Exec.ID, nodeID))
+    }
+    
+    // 更新下游入度
+    node := ctx.Graph[nodeID]
+    if node != nil {
+        for _, out := range node.EdgesOut {
+            ctx.InDegree[out]--
+            if ctx.InDegree[out] == 0 {
+                if _, done := ctx.Steps[out]; !done {
+                    ctx.ReadyQueue <- out
+                }
+            }
+        }
+    }
+    
+    // 检查是否全部完成
+    allDone := true
+    hasPending := false
+    for _, step := range ctx.Steps {
+        if step.Status == "running" || step.Status == "pending" {
+            hasPending = true
+        }
+    }
+    
+    if !hasPending {
+        for _, deg := range ctx.InDegree {
+            if deg > 0 { allDone = false; break }
+        }
+    }
+    
+    if allDone && !hasPending {
+        ctx.Exec.Status = "completed"
+        ctx.Exec.EndedAt = time.Now()
+        db.DB.Save(ctx.Exec)
+        ws.Hub.Broadcast <- []byte(fmt.Sprintf(`{"type":"flow_complete","exec_id":%d}`, ctx.Exec.ID))
+        close(ctx.Done)
+    }
+}
+
+func (ctx *FlowExecutionCtx) createSkippedStep(nodeID string, node *dagNode) {
+    step := &FlowStep{
+        ExecID:   ctx.Exec.ID,
+        NodeID:   nodeID,
+        NodeName: node.Name,
+        NodeType: node.NodeType,
+        Status:   "skipped",
+        Output:   "Skipped due to upstream failure",
+    }
+    db.DB.Create(step)
+    ctx.Steps[nodeID] = step
+    ws.Hub.Broadcast <- []byte(fmt.Sprintf(`{"type":"node_update","exec_id":%d,"node_id":"%s","status":"skipped"}`, ctx.Exec.ID, nodeID))
+}
+
+func (ctx *FlowExecutionCtx) markDownstreamSkipped(nodeID string) {
+    ctx.Mu.Lock()
+    defer ctx.Mu.Unlock()
+    
+    node := ctx.Graph[nodeID]
+    if node == nil { return }
+    
+    for _, next := range node.EdgesOut {
+        if _, done := ctx.Steps[next]; !done {
+            step := &FlowStep{
+                ExecID:   ctx.Exec.ID,
+                NodeID:   next,
+                NodeName: ctx.Graph[next].Name,
+                NodeType: ctx.Graph[next].NodeType,
+                Status:   "skipped",
+                Output:   "Skipped due to upstream failure",
+            }
+            db.DB.Create(step)
+            ctx.Steps[next] = step
+            ws.Hub.Broadcast <- []byte(fmt.Sprintf(`{"type":"node_update","exec_id":%d,"node_id":"%s","status":"skipped"}`, ctx.Exec.ID, next))
+            ctx.markDownstreamSkipped(next)
+        }
+    }
+}
+
+func (ctx *FlowExecutionCtx) failExecution(errMsg string) {
+    ctx.Mu.Lock()
+    defer ctx.Mu.Unlock()
+    
+    ctx.Exec.Status = "failed"
+    ctx.Exec.Error = errMsg
+    ctx.Exec.EndedAt = time.Now()
+    db.DB.Save(ctx.Exec)
+    ws.Hub.Broadcast <- []byte(fmt.Sprintf(`{"type":"flow_fail","exec_id":%d,"error":"%s"}`, ctx.Exec.ID, errMsg))
+    close(ctx.Done)
+}
+
+func ResumeFlowExecution(execID uint) error {
+    ctx, ok := Manager.Get(execID)
+    if !ok {
+        return fmt.Errorf("execution not found or not active")
+    }
+    
+    ctx.Mu.Lock()
+    if ctx.Exec.Status != "waiting_approval" {
+        ctx.Mu.Unlock()
+        return fmt.Errorf("execution is not waiting for approval")
+    }
+    
+    pendingNodeID := ctx.Exec.PendingNodeID
+    ctx.Exec.Status = "running"
+    ctx.Exec.PendingNodeID = ""
+    ctx.Exec.PendingAt = time.Time{}
+    ctx.Mu.Unlock()
+    
+    // 标记审批节点为完成
+    ctx.Mu.Lock()
+    if step, ok := ctx.Steps[pendingNodeID]; ok {
+        step.Status = "completed"
+        step.Output = "Approved by user."
+        step.EndedAt = time.Now()
+        ctx.Mu.Unlock()
+        db.DB.Save(step)
+        
+        ctx.Variables[pendingNodeID] = "approved"
+        ctx.saveVariables()
+        
+        // 继续流程
+        ctx.onNodeComplete(pendingNodeID)
+    } else {
+        ctx.Mu.Unlock()
+    }
+    
+    select {
+    case ctx.PauseCh <- struct{}{}:
+    default:
+    }
+    
+    return nil
+}
+
+func AbortFlowExecution(execID uint) error {
+    ctx, ok := Manager.Get(execID)
+    if !ok {
+        return fmt.Errorf("execution not found or not active")
+    }
+    
+    ctx.Mu.Lock()
+    if ctx.Exec.Status != "waiting_approval" {
+        ctx.Mu.Unlock()
+        return fmt.Errorf("execution is not waiting for approval")
+    }
+    
+    pendingNodeID := ctx.Exec.PendingNodeID
+    
+    ctx.Exec.Status = "failed"
+    ctx.Exec.Error = "Approval rejected by user"
+    ctx.Exec.PendingNodeID = ""
+    ctx.Exec.EndedAt = time.Now()
+    ctx.Mu.Unlock()
+    
+    // 标记审批节点和运行中节点为失败/跳过
+    if pendingNodeID != "" {
+        ctx.Mu.Lock()
+        if step, ok := ctx.Steps[pendingNodeID]; ok {
+            step.Status = "failed"
+            step.Output = "Rejected by user."
+            ctx.Mu.Unlock()
+            db.DB.Save(step)
+        } else {
+            ctx.Mu.Unlock()
+        }
+    }
+    
+    ctx.markDownstreamSkipped(pendingNodeID)
+    
+    close(ctx.Done)
+    return nil
+}
+
+func (ctx *FlowExecutionCtx) executeAgentNode(node *dagNode, step *FlowStep) error {
 	agentIDStr, _ := node.Config["agent_id"].(string)
 	prompt, _ := node.Config["prompt"].(string)
 	requiredSkills, _ := node.Config["required_skills"].(string)
 	timeoutMinutes, _ := node.Config["timeout_minutes"].(float64)
 
 	// 模板变量替换
-	prompt = e.resolveTemplate(prompt)
+	prompt = ctx.resolveTemplate(prompt)
 
 	// 创建 Agent 任务
 	var agentID uint
 	fmt.Sscanf(agentIDStr, "%d", &agentID)
 
-	taskID := fmt.Sprintf("flow_%d_node_%s", e.exec.ID, node.ID)
+	taskID := fmt.Sprintf("flow_%d_node_%s", ctx.Exec.ID, node.ID)
 	task := model.AgentTask{
 		ID:             taskID,
 		AgentID:        agentID,
@@ -412,9 +693,9 @@ func (e *FlowExecutor) executeAgentNode(node *dagNode, step *FlowStep) error {
 			db.DB.Save(step)
 
 			// 存储到变量
-			e.variables[node.ID] = lastLog.Content
-			e.variables[node.ID+"_task_id"] = taskID
-			e.saveVariables()
+			ctx.Variables[node.ID] = lastLog.Content
+			ctx.Variables[node.ID+"_task_id"] = taskID
+			ctx.saveVariables()
 			return nil
 
 		case "failed":
@@ -439,26 +720,26 @@ func (e *FlowExecutor) executeAgentNode(node *dagNode, step *FlowStep) error {
 	return fmt.Errorf("task %s timed out", taskID)
 }
 
-func (e *FlowExecutor) executeConditionNode(node *dagNode, step *FlowStep) error {
+func (ctx *FlowExecutionCtx) executeConditionNode(node *dagNode, step *FlowStep) error {
 	expression, _ := node.Config["expression"].(string)
 
 	// 解析表达式（简单实现：支持 variable == value 格式）
-	expression = e.resolveTemplate(expression)
+	expression = ctx.resolveTemplate(expression)
 
-	result := e.evaluateCondition(expression)
+	result := ctx.evaluateCondition(expression)
 
 	step.Status = "completed"
 	step.Output = fmt.Sprintf("%t", result)
 	db.DB.Save(step)
 
-	e.variables[node.ID] = result
-	e.saveVariables()
+	ctx.Variables[node.ID] = result
+	ctx.saveVariables()
 
 	log.Printf("[Flow] Condition '%s': %s = %t", node.Name, expression, result)
 	return nil
 }
 
-func (e *FlowExecutor) evaluateCondition(expr string) bool {
+func (ctx *FlowExecutionCtx) evaluateCondition(expr string) bool {
 	expr = strings.TrimSpace(expr)
 
 	// 支持简单比较
@@ -498,11 +779,11 @@ func (e *FlowExecutor) evaluateCondition(expr string) bool {
 	return true // 默认通过
 }
 
-func (e *FlowExecutor) executeMergeNode(node *dagNode, step *FlowStep) error {
+func (ctx *FlowExecutionCtx) executeMergeNode(node *dagNode, step *FlowStep) error {
 	// 汇聚节点：等待所有上游完成
 	var outputs []string
 	for _, dep := range node.EdgesIn {
-		if s, ok := e.steps[dep]; ok {
+		if s, ok := ctx.Steps[dep]; ok {
 			outputs = append(outputs, fmt.Sprintf("[%s]: %s", s.NodeName, s.Output))
 		}
 	}
@@ -511,13 +792,13 @@ func (e *FlowExecutor) executeMergeNode(node *dagNode, step *FlowStep) error {
 	step.Output = strings.Join(outputs, "\n---\n")
 	db.DB.Save(step)
 
-	e.variables[node.ID] = step.Output
-	e.saveVariables()
+	ctx.Variables[node.ID] = step.Output
+	ctx.saveVariables()
 
 	return nil
 }
 
-func (e *FlowExecutor) executeTriggerNode(node *dagNode, step *FlowStep) error {
+func (ctx *FlowExecutionCtx) executeTriggerNode(node *dagNode, step *FlowStep) error {
 	// Trigger 节点：流程起点，直接完成
 	step.Status = "completed"
 	step.Output = "Trigger activated"
@@ -525,29 +806,9 @@ func (e *FlowExecutor) executeTriggerNode(node *dagNode, step *FlowStep) error {
 	return nil
 }
 
-// markDownstreamSkipped 标记下游节点为 skipped
-func (e *FlowExecutor) markDownstreamSkipped(nodeID string) {
-	node := e.graph[nodeID]
-	for _, next := range node.EdgesOut {
-		if _, done := e.steps[next]; !done {
-			step := &FlowStep{
-				ExecID:    e.exec.ID,
-				NodeID:    next,
-				NodeName:  e.graph[next].Name,
-				NodeType:  e.graph[next].NodeType,
-				Status:    "skipped",
-				Output:    "Skipped due to upstream",
-			}
-			db.DB.Create(step)
-			e.steps[next] = step
-			e.markDownstreamSkipped(next)
-		}
-	}
-}
-
 // skipFalseBranch 条件为 false 时，跳过不匹配的分支
-func (e *FlowExecutor) skipFalseBranch(condNodeID string) {
-	node := e.graph[condNodeID]
+func (ctx *FlowExecutionCtx) skipFalseBranch(condNodeID string) {
+	node := ctx.Graph[condNodeID]
 	for range node.EdgesOut {
 		// TODO: 根据 edge condition 判断是否跳过
 		// 简化：跳过所有出边（实际应根据边的 condition 字段）
@@ -555,8 +816,8 @@ func (e *FlowExecutor) skipFalseBranch(condNodeID string) {
 }
 
 // resolveTemplate 解析模板变量 ${node_id}
-func (e *FlowExecutor) resolveTemplate(s string) string {
-	for varName, varValue := range e.variables {
+func (ctx *FlowExecutionCtx) resolveTemplate(s string) string {
+	for varName, varValue := range ctx.Variables {
 		placeholder := "${" + varName + "}"
 		if strings.Contains(s, placeholder) {
 			// JSON-escape the value: marshal to get proper escaping, then strip surrounding quotes
@@ -572,10 +833,10 @@ func (e *FlowExecutor) resolveTemplate(s string) string {
 	return s
 }
 
-func (e *FlowExecutor) saveVariables() {
-	data, _ := json.Marshal(e.variables)
-	e.exec.Variables = string(data)
-	db.DB.Model(e.exec).Update("variables", string(data))
+func (ctx *FlowExecutionCtx) saveVariables() {
+	data, _ := json.Marshal(ctx.Variables)
+	ctx.Exec.Variables = string(data)
+	db.DB.Model(ctx.Exec).Update("variables", string(data))
 }
 
 // ─── 公开 API ───
@@ -635,7 +896,7 @@ func CancelFlowExecution(execID uint) error {
 }
 
 // executeCodeNode 执行代码节点 (shell 命令)
-func (e *FlowExecutor) executeCodeNode(node *dagNode, step *FlowStep) error {
+func (ctx *FlowExecutionCtx) executeCodeNode(node *dagNode, step *FlowStep) error {
 	language, _ := node.Config["language"].(string)
 	code, _ := node.Config["code"].(string)
 	timeoutMinutes, _ := node.Config["timeout_minutes"].(float64)
@@ -676,8 +937,8 @@ func (e *FlowExecutor) executeCodeNode(node *dagNode, step *FlowStep) error {
 			return fmt.Errorf("code execution failed: %v, output: %s", err, step.Output)
 		}
 		step.Status = "completed"
-		e.variables[node.ID] = step.Output
-		e.saveVariables()
+		ctx.Variables[node.ID] = step.Output
+		ctx.saveVariables()
 		return nil
 	case <-time.After(timeout):
 		cmd.Process.Kill()
@@ -686,7 +947,7 @@ func (e *FlowExecutor) executeCodeNode(node *dagNode, step *FlowStep) error {
 }
 
 // executeSandboxNode 通过 Bridge 调度 Sandbox 执行任务 (同步阻塞)
-func (e *FlowExecutor) executeSandboxNode(node *dagNode, step *FlowStep) error {
+func (ctx *FlowExecutionCtx) executeSandboxNode(node *dagNode, step *FlowStep) error {
 	sandboxID, _ := node.Config["sandbox_id"].(string)
 	executor, _ := node.Config["executor"].(string)
 	command, _ := node.Config["command"].(string)
@@ -709,7 +970,7 @@ func (e *FlowExecutor) executeSandboxNode(node *dagNode, step *FlowStep) error {
 			variables["branch"] = gitBranch
 		}
 		// 注入前置节点输出为变量
-		for k, v := range e.variables {
+		for k, v := range ctx.Variables {
 			variables[k] = fmt.Sprintf("%v", v)
 		}
 		resolved, err := ResolvePromptTemplate(tmplName, variables)
@@ -720,7 +981,7 @@ func (e *FlowExecutor) executeSandboxNode(node *dagNode, step *FlowStep) error {
 	}
 
 	// 模板变量替换
-	command = e.resolveTemplate(command)
+	command = ctx.resolveTemplate(command)
 
 	if command == "" {
 		return fmt.Errorf("sandbox node requires 'command' config")
@@ -749,7 +1010,7 @@ func (e *FlowExecutor) executeSandboxNode(node *dagNode, step *FlowStep) error {
 	// 构造请求体
 	payload := map[string]interface{}{
 		"sandbox_id": sandboxID,
-		"task_id":    fmt.Sprintf("flow_%d_node_%s", e.exec.ID, node.ID),
+		"task_id":    fmt.Sprintf("flow_%d_node_%s", ctx.Exec.ID, node.ID),
 		"payload": map[string]interface{}{
 			"executor": executor,
 			"command":  command,
@@ -785,13 +1046,13 @@ func (e *FlowExecutor) executeSandboxNode(node *dagNode, step *FlowStep) error {
 	}
 
 	step.Status = "completed"
-	e.variables[node.ID] = result.Output
-	e.saveVariables()
+	ctx.Variables[node.ID] = result.Output
+	ctx.saveVariables()
 	return nil
 }
 
 // executeWebhookNode 执行 Webhook 节点 (HTTP 请求)
-func (e *FlowExecutor) executeWebhookNode(node *dagNode, step *FlowStep) error {
+func (ctx *FlowExecutionCtx) executeWebhookNode(node *dagNode, step *FlowStep) error {
 	method, _ := node.Config["method"].(string)
 	url, _ := node.Config["url"].(string)
 	timeoutMinutes, _ := node.Config["timeout_minutes"].(float64)
@@ -802,7 +1063,7 @@ func (e *FlowExecutor) executeWebhookNode(node *dagNode, step *FlowStep) error {
 		return fmt.Errorf("webhook node requires 'url' config")
 	}
 	
-	url = e.resolveTemplate(url)
+	url = ctx.resolveTemplate(url)
 	
 	if method == "" {
 		method = "GET"
@@ -819,7 +1080,7 @@ func (e *FlowExecutor) executeWebhookNode(node *dagNode, step *FlowStep) error {
 	var bodyReader io.Reader
 	if bodyRaw != "" {
 		log.Printf("[Flow] Webhook body BEFORE template: %s", bodyRaw)
-		bodyRaw = e.resolveTemplate(bodyRaw)
+		bodyRaw = ctx.resolveTemplate(bodyRaw)
 		log.Printf("[Flow] Webhook body AFTER template: %s", bodyRaw)
 		bodyReader = strings.NewReader(bodyRaw)
 	}
@@ -860,13 +1121,13 @@ func (e *FlowExecutor) executeWebhookNode(node *dagNode, step *FlowStep) error {
 	}
 	
 	step.Status = "completed"
-	e.variables[node.ID] = step.Output
-	e.saveVariables()
+	ctx.Variables[node.ID] = step.Output
+	ctx.saveVariables()
 	return nil
 }
 
 // executeApprovalNode 人在回路：发送飞书审批卡片并暂停流程
-func (e *FlowExecutor) executeApprovalNode(node *dagNode, step *FlowStep) error {
+func (ctx *FlowExecutionCtx) executeApprovalNode(node *dagNode, step *FlowStep) error {
 	webhookURL, _ := node.Config["webhook_url"].(string)
 	cardTitle, _ := node.Config["card_title"].(string)
 	cardBody, _ := node.Config["card_body"].(string)
@@ -881,8 +1142,8 @@ func (e *FlowExecutor) executeApprovalNode(node *dagNode, step *FlowStep) error 
 	}
 
 	// 模板变量替换
-	cardBody = e.resolveTemplate(cardBody)
-	cardTitle = e.resolveTemplate(cardTitle)
+	cardBody = ctx.resolveTemplate(cardBody)
+	cardTitle = ctx.resolveTemplate(cardTitle)
 
 	// 构造飞书审批卡片
 	card := map[string]interface{}{
@@ -903,13 +1164,13 @@ func (e *FlowExecutor) executeApprovalNode(node *dagNode, step *FlowStep) error 
 						"tag":  "button",
 						"text": map[string]interface{}{"tag": "plain_text", "content": "✅ 批准执行"},
 						"type": "primary",
-						"url":  fmt.Sprintf("%s/api/flows/%d/executions/%d/approve?token=%s", getPublicURL(), e.exec.FlowID, e.exec.ID, generateApprovalToken(e.exec.ID)),
+						"url":  fmt.Sprintf("%s/api/flows/%d/executions/%d/approve?token=%s", getPublicURL(), ctx.Exec.FlowID, ctx.Exec.ID, generateApprovalToken(ctx.Exec.ID)),
 					},
 					map[string]interface{}{
 						"tag":  "button",
 						"text": map[string]interface{}{"tag": "plain_text", "content": "❌ 拒绝"},
 						"type": "danger",
-						"url":  fmt.Sprintf("%s/api/flows/%d/executions/%d/reject?token=%s", getPublicURL(), e.exec.FlowID, e.exec.ID, generateApprovalToken(e.exec.ID)),
+						"url":  fmt.Sprintf("%s/api/flows/%d/executions/%d/reject?token=%s", getPublicURL(), ctx.Exec.FlowID, ctx.Exec.ID, generateApprovalToken(ctx.Exec.ID)),
 					},
 				},
 			},
@@ -940,17 +1201,17 @@ func (e *FlowExecutor) executeApprovalNode(node *dagNode, step *FlowStep) error 
 	step.EndedAt = time.Now()
 	db.DB.Save(step)
 
-	e.exec.Status = "waiting_approval"
-	e.exec.PendingNodeID = node.ID
-	e.exec.PendingAt = time.Now()
-	e.exec.ApprovalTimeout = int(timeoutMinutes)
-	if e.exec.ApprovalTimeout == 0 {
-		e.exec.ApprovalTimeout = 1440 // 默认 24 小时
+	ctx.Exec.Status = "waiting_approval"
+	ctx.Exec.PendingNodeID = node.ID
+	ctx.Exec.PendingAt = time.Now()
+	ctx.Exec.ApprovalTimeout = int(timeoutMinutes)
+	if ctx.Exec.ApprovalTimeout == 0 {
+		ctx.Exec.ApprovalTimeout = 1440 // 默认 24 小时
 	}
-	db.DB.Save(e.exec)
+	db.DB.Save(ctx.Exec)
 
 	// 返回特殊 error 让执行器暂停（不标记为 failed）
-	return &ApprovalPendingError{ExecID: e.exec.ID}
+	return &ApprovalPendingError{ExecID: ctx.Exec.ID}
 }
 
 // ApprovalPendingError 表示审批等待中（非真正错误）
@@ -968,138 +1229,9 @@ func IsApprovalPending(err error) bool {
 	return ok
 }
 
-// ResumeFlowExecution 恢复被暂停的审批流程
-func ResumeFlowExecution(execID uint) error {
-	var exec FlowExecution
-	if err := db.DB.First(&exec, execID).Error; err != nil {
-		return fmt.Errorf("execution not found: %w", err)
-	}
-	if exec.Status != "waiting_approval" {
-		return fmt.Errorf("execution is not waiting for approval (current: %s)", exec.Status)
-	}
-
-	log.Printf("[Flow] Resuming execution %d (approved)", execID)
-
-	// 更新执行状态
-	exec.Status = "running"
-	exec.PendingNodeID = ""
-	exec.PendingAt = time.Time{}
-	db.DB.Save(&exec)
-
-	// 重新加载图并继续执行
-	var flow model.AgentFlow
-	if err := db.DB.First(&flow, exec.FlowID).Error; err != nil {
-		return fmt.Errorf("flow not found: %w", err)
-	}
-
-	graph, err := buildDAG(flow)
-	if err != nil {
-		return fmt.Errorf("build DAG: %w", err)
-	}
-
-	// 恢复变量
-	variables := make(map[string]interface{})
-	if exec.Variables != "" {
-		json.Unmarshal([]byte(exec.Variables), &variables)
-	}
-
-	// 从审批节点之后继续
-	pendingNodeID := exec.PendingNodeID
-	// 标记审批节点为完成
-	var step FlowStep
-	if err := db.DB.Where("exec_id = ? AND node_id = ?", execID, pendingNodeID).First(&step).Error; err == nil {
-		step.Status = "completed"
-		step.Output = "Approved by user."
-		step.EndedAt = time.Now()
-		db.DB.Save(&step)
-		variables[pendingNodeID] = "approved"
-	}
-
-	// 重建执行器继续
-	order := topologicalSort(graph)
-	executor := &FlowExecutor{
-		exec:      &exec,
-		graph:     graph,
-		order:     order,
-		variables: variables,
-		steps:     make(map[string]*FlowStep),
-	}
-	// 加载已有步骤
-	var steps []FlowStep
-	db.DB.Where("exec_id = ?", execID).Find(&steps)
-	for i := range steps {
-		executor.steps[steps[i].NodeID] = &steps[i]
-	}
-
-	// 从审批节点之后继续执行
-	skip := true
-	for _, nodeID := range order {
-		if nodeID == pendingNodeID {
-			skip = false
-			continue
-		}
-		if skip {
-			continue
-		}
-		_, err := executor.executeNode(nodeID)
-		if err != nil {
-			exec.Status = "failed"
-			exec.Error = err.Error()
-			exec.EndedAt = time.Now()
-			db.DB.Save(&exec)
-			return err
-		}
-	}
-
-	exec.Status = "completed"
-	exec.EndedAt = time.Now()
-	db.DB.Save(&exec)
-
-	log.Printf("[Flow] Execution %d completed after approval", execID)
-	return nil
-}
-
-// AbortFlowExecution 终止被暂停的审批流程
-func AbortFlowExecution(execID uint) error {
-	var exec FlowExecution
-	if err := db.DB.First(&exec, execID).Error; err != nil {
-		return fmt.Errorf("execution not found: %w", err)
-	}
-	if exec.Status != "waiting_approval" {
-		return fmt.Errorf("execution is not waiting for approval (current: %s)", exec.Status)
-	}
-
-	log.Printf("[Flow] Aborting execution %d (rejected)", execID)
-
-	// 标记审批节点为失败
-	var step FlowStep
-	if exec.PendingNodeID != "" {
-		db.DB.Where("exec_id = ? AND node_id = ?", exec.ID, exec.PendingNodeID).First(&step)
-		if step.ID > 0 {
-			step.Status = "failed"
-			step.Output = "Rejected by user."
-			step.Error = "User rejected approval"
-			step.EndedAt = time.Now()
-			db.DB.Save(&step)
-		}
-	}
-
-	// 标记所有 running 步骤为 skipped
-	db.DB.Model(&FlowStep{}).Where("exec_id = ? AND status = ?", execID, "running").Updates(map[string]interface{}{
-		"status": "skipped",
-		"output": "Skipped: approval rejected",
-	})
-
-	exec.Status = "failed"
-	exec.Error = "Approval rejected by user"
-	exec.PendingNodeID = ""
-	exec.EndedAt = time.Now()
-	db.DB.Save(&exec)
-
-	return nil
-}
-
 // ResolvePromptTemplate 获取提示词模板（Langfuse 优先，本地 DB 后备）
+
+
 func ResolvePromptTemplate(name string, variables map[string]string) (string, error) {
 	// 1. 尝试从 Langfuse 获取
 	if config.Cfg.Langfuse.URL != "" && config.Cfg.Langfuse.PublicKey != "" && config.Cfg.Langfuse.SecretKey != "" {
@@ -1188,6 +1320,7 @@ func GetPromptTemplates() []model.PromptTemplate {
 }
 
 // DeletePromptTemplate 删除提示词模板
+
 func DeletePromptTemplate(id uint) error {
 	return db.DB.Delete(&model.PromptTemplate{}, id).Error
 }
