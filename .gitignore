@@ -5,45 +5,39 @@ vendor/
 # Build Outputs
 dist/
 build/
+apps/web/dist/
 
 # Binaries
 *.exe
 *.dll
 *.so
 *.dylib
-ai-collab-hub
-backend/ai-collab-server
-backend/hub
+apps/hub/hub
+apps/hub/hub.exe
+apps/hub/server
+services/*/agent-bridge
+services/*/agent-bridge.exe
+services/*/mock-hub
+services/*/mock-hub.exe
+integrations/hub-mcp-go/hub-mcp
+integrations/hub-mcp-go/hub-mcp.exe
+services/agent-bridge/agent-bridge-linux-amd64
+services/agent-sandbox/agent-sandbox-linux-amd64
 
 # Database & Uploads
 *.db
 uploads/
+apps/hub/uploads/
 
 # OS Files
 .DS_Store
 Thumbs.db
 
-# Old project files
-.old-project/
-
 # Logs
 *.log
-# Binaries
-*_linux_amd64
-*backend
-*.exe
 *.bak
 
-# Logs
-*.log
-
-# Node
-node_modules/
-dist/
-
-# OS
-.DS_Store
-Thumbs.db
+# Legacy
+.old-project/
 hub-backend
-backend/hub-backend
-*.log
+*_linux_amd64

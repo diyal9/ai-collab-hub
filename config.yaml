@@ -1,7 +1,10 @@
+# 部署参考配置（完整配置见 apps/hub/config.yaml）
+# public_url 使用 /ai-collab-hub 前缀，见 docs/NAMING.md
+
 server:
   port: 8087
   jwt_secret: "your-super-secret-jwt-key-change-me"
-  public_url: "http://47.107.172.201:8089/hermesshare"
+  public_url: "http://47.107.172.201:8089/ai-collab-hub"
 database:
   driver: sqlite3
   dsn: "./data.db"

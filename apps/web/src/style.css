@@ -1,0 +1,22 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --hub-primary: #2563eb;
+  --hub-primary-soft: #eff6ff;
+  --hub-surface: #ffffff;
+  --hub-bg: #f8fafc;
+  --hub-text: #374151;
+  --hub-text-muted: #6b7280;
+  --hub-border: #e5e7eb;
+  --hub-danger: #dc2626;
+  --hub-success: #16a34a;
+}
+
+body {
+  background: var(--hub-bg);
+  margin: 0;
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  color: var(--hub-text);
+}
